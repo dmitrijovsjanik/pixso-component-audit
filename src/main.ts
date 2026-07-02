@@ -20,7 +20,9 @@
 
 pixso.showUI(__html__, { width: 860, height: 660 });
 
-const CHUNK_SIZE = 800; // nodes processed before yielding (no network in phase 1 → can be large)
+const CHUNK_SIZE = 5000; // nodes processed before yielding. Phase 1 has no network,
+// so larger chunks mean fewer cross-thread yields (each yield flushes queued
+// progress messages + lets the React UI re-render — expensive on huge files).
 const LIB_CONCURRENCY = 8; // parallel getLibraryInfoAsync calls in phase 2
 const LIB_TIMEOUT_MS = 4000;
 
@@ -58,13 +60,26 @@ interface DetachRecord {
 
 // ---------- helpers ----------
 
-function isEffectivelyVisible(node: BaseNode): boolean {
-  let current: BaseNode | null = node;
-  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-    if ("visible" in current && !(current as SceneNode).visible) return false;
-    current = current.parent;
+// Lazy path: instead of building a string[] for every one of the ~285k nodes,
+// the walk carries an immutable linked list of ancestor names. We only
+// materialize a " / "-joined string for the ~24k nodes we actually record, by
+// walking this list backwards. depth is O(1) via a counter on the frame.
+interface PathFrame {
+  name: string;
+  parent: PathFrame | null;
+  depth: number;
+}
+
+function buildPath(frame: PathFrame | null): string {
+  if (!frame) return "";
+  const parts: string[] = [];
+  let f: PathFrame | null = frame;
+  while (f) {
+    parts.push(f.name);
+    f = f.parent;
   }
-  return true;
+  parts.reverse();
+  return parts.join(" / ");
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
@@ -152,7 +167,9 @@ const keyToLibrary = new Map<string, { name: string; key: string }>();
 let libraryMapBuilt = false;
 let libraryMapMeta: any = { libraries: [], componentKeys: 0, error: null };
 
-async function buildLibraryMap(): Promise<void> {
+async function buildLibraryMap(
+  onTick?: (done: number, total: number) => void
+): Promise<void> {
   if (libraryMapBuilt) return;
   libraryMapBuilt = true;
   try {
@@ -161,14 +178,29 @@ async function buildLibraryMap(): Promise<void> {
       libraryMapMeta.error = "getLibraryListAsync timed out or returned null";
       return;
     }
-    for (const lib of list) {
-      if (!lib || !lib.subscribed) continue;
-      let assets: any = null;
-      try {
-        assets = await withTimeout<any>((pixso as any).getLibraryByKeyAsync(lib.key), 15000);
-      } catch (e) {
-        assets = null;
-      }
+    const subscribed = list.filter((lib) => lib && lib.subscribed);
+
+    // Fetch all subscribed libraries in PARALLEL — getLibraryByKeyAsync is a
+    // network call and doing them one-by-one was the "stuck on phase 1→2" hang.
+    let done = 0;
+    const total = subscribed.length;
+    if (onTick) onTick(0, total);
+    const fetched = await Promise.all(
+      subscribed.map(async (lib) => {
+        let assets: any = null;
+        try {
+          assets = await withTimeout<any>((pixso as any).getLibraryByKeyAsync(lib.key), 15000);
+        } catch (e) {
+          assets = null;
+        }
+        done++;
+        if (onTick) onTick(done, total);
+        return { lib, assets };
+      })
+    );
+
+    // Indexing is sequential (Map writes) but cheap — no network here.
+    for (const { lib, assets } of fetched) {
       const compCount = assets && assets.componentList ? assets.componentList.length : 0;
       libraryMapMeta.libraries.push({ name: lib.name, key: lib.key, subscribed: lib.subscribed, components: compCount });
       if (!assets || !assets.componentList) continue;
@@ -311,14 +343,21 @@ async function scan() {
 
   for (const page of pages) {
     if (abort) break;
-    const stack: { node: SceneNode; path: string[]; ancInst: boolean; ancLibInst: boolean; libAncestor: InstanceRecord | null; parentInstId: string | null }[] = [];
+    const stack: { node: SceneNode; pathFrame: PathFrame | null; parentVisible: boolean; ancInst: boolean; ancLibInst: boolean; libAncestor: InstanceRecord | null; parentInstId: string | null }[] = [];
     for (const child of (page as PageNode).children) {
-      stack.push({ node: child, path: [], ancInst: false, ancLibInst: false, libAncestor: null, parentInstId: null });
+      stack.push({ node: child, pathFrame: null, parentVisible: true, ancInst: false, ancLibInst: false, libAncestor: null, parentInstId: null });
     }
     while (stack.length > 0) {
       if (abort) break;
-      const { node, path, ancInst, ancLibInst, libAncestor, parentInstId } = stack.pop()!;
+      const { node, pathFrame, parentVisible, ancInst, ancLibInst, libAncestor, parentInstId } = stack.pop()!;
       processed++;
+
+      // Effective visibility without walking up the tree: a node is visible iff
+      // every ancestor is visible AND it is itself visible. We already know the
+      // parent chain's visibility from the stack.
+      const selfVisible =
+        "visible" in node ? (node as SceneNode).visible : true;
+      const effectivelyVisible = parentVisible && selfVisible;
 
       let childAncInst = ancInst;
       let childAncLibInst = ancLibInst;
@@ -344,11 +383,11 @@ async function scan() {
           origin: master ? "local" : "unknown", // provisional; phase 2 upgrades to "library"
           libraryName: null,
           libraryKey: null,
-          visible: isEffectivelyVisible(inst),
+          visible: effectivelyVisible,
           directlyVisible: inst.visible,
           page: page.name,
-          path: path.join(" / "),
-          depth: path.length,
+          path: buildPath(pathFrame),
+          depth: pathFrame ? pathFrame.depth : 0,
           nestedInsideInstance: ancInst,
           nestedInsideLibraryInstance: ancLibInst,
           inheritedFromParent: false,
@@ -402,11 +441,11 @@ async function scan() {
           origin: "local", // provisional; phase 2 may upgrade a remote master to library
           libraryName: null,
           libraryKey: null,
-          visible: isEffectivelyVisible(master),
+          visible: effectivelyVisible,
           directlyVisible: master.visible,
           page: page.name,
-          path: path.join(" / "),
-          depth: path.length,
+          path: buildPath(pathFrame),
+          depth: pathFrame ? pathFrame.depth : 0,
           nestedInsideInstance: ancInst,
           nestedInsideLibraryInstance: ancLibInst,
           inheritedFromParent: false,
@@ -428,9 +467,15 @@ async function scan() {
       }
 
       if ("children" in node) {
-        const nextPath = path.concat([node.name]);
+        // One shared frame for all children of this node (immutable, so safe to
+        // share). Replaces per-child array copies (path.concat) in the hot loop.
+        const childFrame: PathFrame = {
+          name: node.name,
+          parent: pathFrame,
+          depth: (pathFrame ? pathFrame.depth : 0) + 1,
+        };
         for (const kid of (node as ChildrenMixin).children) {
-          stack.push({ node: kid, path: nextPath, ancInst: childAncInst, ancLibInst: childAncLibInst, libAncestor: childLibAncestor, parentInstId: childParentInstId });
+          stack.push({ node: kid, pathFrame: childFrame, parentVisible: effectivelyVisible, ancInst: childAncInst, ancLibInst: childAncLibInst, libAncestor: childLibAncestor, parentInstId: childParentInstId });
         }
       }
 
@@ -466,7 +511,10 @@ async function scan() {
 
   // Build the reliable key->library map ONCE before resolving masters.
   progress("Phase 2/3 · loading libraries", 0, 1, "Fetching subscribed libraries…");
-  await buildLibraryMap();
+  await buildLibraryMap((done, total) =>
+    progress("Phase 2/3 · loading libraries", done, total,
+      "Fetched " + done + " / " + total + " libraries")
+  );
   diag.libraryMap = libraryMapMeta;
 
   const masterBuckets = Array.from(uniqueMasters.values());

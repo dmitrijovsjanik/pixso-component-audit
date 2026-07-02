@@ -11,8 +11,8 @@ import {
   Layers01Icon,
 } from "@hugeicons/core-free-icons";
 import { Button } from "./components/ui/button";
-import { Progress } from "./components/ui/progress";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
+import { ScanProgress } from "./components/ScanProgress";
 import { FilterBar } from "./components/FilterBar";
 import { Summary } from "./components/Summary";
 import { InstancesTable } from "./components/InstancesTable";
@@ -41,23 +41,13 @@ const INITIAL_FILTERS: Filters = {
   libraries: [],
 };
 
-interface ProgressState {
-  active: boolean;
-  pct: number;
-  phase: string;
-  detail: string;
-}
-
 export default function App() {
   const [result, setResult] = useState<ScanResult | null>(null);
-  const [progress, setProgress] = useState<ProgressState>({
-    active: false,
-    pct: 0,
-    phase: "",
-    detail: "",
-  });
+  // Progress/warn live in <ScanProgress> so their high-frequency updates don't
+  // re-render App (which holds the heavy tables). App tracks only whether a scan
+  // is in flight, to toggle the Scan/Cancel buttons.
+  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [warn, setWarn] = useState<string | null>(null);
 
   const [filters, setFiltersState] = useState<Filters>(INITIAL_FILTERS);
   const [viewMode, setViewMode] = useState<ViewMode>("flat");
@@ -87,18 +77,10 @@ export default function App() {
     });
   }, []);
 
+  // App only reacts to terminal messages (result/error) + focus results — all
+  // low-frequency. Progress/warn are handled inside <ScanProgress>.
   const handleMessage = useCallback((msg: IncomingMsg) => {
-    if (msg.type === "progress") {
-      const pct = msg.total ? Math.round((msg.done / msg.total) * 100) : 0;
-      setProgress({
-        active: true,
-        pct,
-        phase: `${msg.phase}  —  ${pct}%`,
-        detail: msg.detail || `${msg.done} / ${msg.total}`,
-      });
-    } else if (msg.type === "warn") {
-      setWarn(msg.message);
-    } else if (msg.type === "focusResult") {
+    if (msg.type === "focusResult") {
       if (!msg.ok) {
         setSelectedId((cur) => {
           if (cur) {
@@ -109,10 +91,10 @@ export default function App() {
         });
       }
     } else if (msg.type === "error") {
-      setProgress((p) => ({ ...p, active: false }));
+      setScanning(false);
       setError(msg.message);
     } else if (msg.type === "result") {
-      setProgress((p) => ({ ...p, active: false }));
+      setScanning(false);
       setError(null);
       setResult(msg);
     }
@@ -121,9 +103,8 @@ export default function App() {
   useSandboxMessages(handleMessage);
 
   const startScan = () => {
-    setProgress({ active: true, pct: 0, phase: "Starting…", detail: "" });
+    setScanning(true);
     setError(null);
-    setWarn(null);
     post({ type: "scan" });
   };
 
@@ -209,14 +190,14 @@ export default function App() {
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
-        <Button onClick={startScan} disabled={progress.active}>
+        <Button onClick={startScan} disabled={scanning}>
           <HugeiconsIcon icon={PlayCircle02Icon} size={14} />
           Scan file
         </Button>
         <Button
           variant="destructive"
           onClick={() => post({ type: "cancel" })}
-          disabled={!progress.active}
+          disabled={!scanning}
         >
           <HugeiconsIcon icon={StopCircleIcon} size={14} />
           Cancel
@@ -240,20 +221,9 @@ export default function App() {
         </Button>
       </div>
 
-      {/* Progress */}
-      {progress.active && (
-        <div className="px-3.5 pb-2.5">
-          <Progress value={progress.pct} />
-          <div className="mt-1 text-muted-foreground">{progress.phase}</div>
-          {progress.detail && (
-            <div className="text-muted-foreground">{progress.detail}</div>
-          )}
-        </div>
-      )}
+      {/* Progress (owns its own high-frequency state) */}
+      <ScanProgress scanning={scanning} />
 
-      {warn && (
-        <div className="px-3.5 py-1 text-muted-foreground">⚠ {warn}</div>
-      )}
       {error && (
         <div className="px-3.5 py-1 text-destructive">Error: {error}</div>
       )}
