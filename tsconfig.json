@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["ES2017"],
+    "strict": true,
+    "moduleResolution": "node",
+    "module": "CommonJS",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "skipLibCheck": true,
+    "typeRoots": ["./node_modules/@pixso/plugin-typings", "./node_modules/@types"]
+  },
+  "files": ["./node_modules/@pixso/plugin-typings/index.d.ts"],
+  "include": ["src/**/*.ts"]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "DS Component Audit",
+  "id": "pixso-component-audit-dev",
+  "main": "./dist/main.js",
+  "ui": "./src/ui.html",
+  "editorType": ["pixso"]
+}
