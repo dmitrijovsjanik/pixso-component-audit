@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { LibraryMultiSelect } from "./LibraryMultiSelect";
 import type { Filters } from "@/lib/audit";
 import type { ViewMode } from "@/lib/types";
 
@@ -65,22 +66,11 @@ export function FilterBar({
         </SelectContent>
       </Select>
 
-      <Select
-        value={filters.library || ALL}
-        onValueChange={(v) => setFilters({ library: v === ALL ? "" : v })}
-      >
-        <SelectTrigger className="w-[150px]">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL}>All libraries</SelectItem>
-          {libraries.map((n) => (
-            <SelectItem key={n} value={n}>
-              {n}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <LibraryMultiSelect
+        libraries={libraries}
+        selected={filters.libraries}
+        onChange={(next) => setFilters({ libraries: next })}
+      />
 
       <Select
         value={viewMode}

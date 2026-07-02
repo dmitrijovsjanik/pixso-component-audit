@@ -10,7 +10,15 @@ export interface Filters {
   showNested: boolean;
   search: string;
   origin: string;
-  library: string;
+  // Selected library names. Empty = all libraries (no library restriction).
+  libraries: string[];
+}
+
+// A record passes the library filter if none are selected, or its library is
+// among the selected ones.
+function matchesLibrary(r: InstanceRecord, selected: string[]): boolean {
+  if (!selected.length) return true;
+  return selected.indexOf(r.libraryName || "") !== -1;
 }
 
 // Instances honoring all filters — hidden/nested toggles, search, origin, lib.
@@ -24,7 +32,7 @@ export function visibleInstances(
     if (!f.showHidden && !r.visible) return false;
     if (!f.showNested && r.nestedInsideInstance) return false;
     if (f.origin && r.origin !== f.origin) return false;
-    if (f.library && (r.libraryName || "") !== f.library) return false;
+    if (!matchesLibrary(r, f.libraries)) return false;
     if (q && r.componentName.toLowerCase().indexOf(q) === -1) return false;
     return true;
   });
@@ -160,7 +168,7 @@ export function buildTree(res: ScanResult, f: Filters): TreeNode[] {
   const pool = res.instances.filter((r) => {
     if (!f.showHidden && !r.visible) return false;
     if (f.origin && r.origin !== f.origin) return false;
-    if (f.library && (r.libraryName || "") !== f.library) return false;
+    if (!matchesLibrary(r, f.libraries)) return false;
     return true;
   });
 

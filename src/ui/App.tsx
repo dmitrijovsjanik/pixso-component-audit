@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   PlayCircle02Icon,
@@ -38,7 +38,7 @@ const INITIAL_FILTERS: Filters = {
   showNested: false,
   search: "",
   origin: "",
-  library: "",
+  libraries: [],
 };
 
 interface ProgressState {
@@ -137,6 +137,18 @@ export default function App() {
     () => (result ? libraryNames(result, filters) : []),
     [result, filters]
   );
+
+  // Drop selected libraries that no longer exist in scope (e.g. after a new scan
+  // or a scope-changing toggle), so the filter doesn't hide everything silently.
+  useEffect(() => {
+    setFiltersState((f) => {
+      if (!f.libraries.length) return f;
+      const pruned = f.libraries.filter((n) => libraries.indexOf(n) !== -1);
+      return pruned.length === f.libraries.length
+        ? f
+        : { ...f, libraries: pruned };
+    });
+  }, [libraries]);
 
   const { shown, total } = useMemo(() => {
     if (!result) return { shown: 0, total: 0 };
