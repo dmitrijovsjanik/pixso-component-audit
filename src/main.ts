@@ -123,7 +123,7 @@ function progress(
   done: number,
   total: number,
   detail?: string,
-  counters?: { label: string; value: number }[]
+  counters?: { key: string; label: string; value: number }[]
 ) {
   pixso.ui.postMessage({ type: "progress", phase, done, total, detail: detail || "", counters });
 }
@@ -509,8 +509,8 @@ async function runScan() {
       if (processed % CHUNK_SIZE === 0) {
         // Live counters, no fake percent (total=0 tells the UI to show a count).
         progress("Phase 1/3 · scanning layers", processed, 0, "", [
-          { label: "Layers", value: processed },
-          { label: "Instances", value: instances.length },
+          { key: "layers", label: "Layers", value: processed },
+          { key: "instances", label: "Instances", value: instances.length },
         ]);
         await yieldToUI();
       }
@@ -519,8 +519,8 @@ async function runScan() {
   totalNodes = processed;
   timings.phase1_walk = Date.now() - tPhase1;
   progress("Phase 1/3 · scanning layers", processed, 0, "", [
-    { label: "Layers", value: processed },
-    { label: "Instances", value: instances.length },
+    { key: "layers", label: "Layers", value: processed },
+    { key: "instances", label: "Instances", value: instances.length },
   ]);
 
   // (Component/set names for the detach heuristic are already collected during
@@ -537,7 +537,7 @@ async function runScan() {
   progress("Phase 2/3 · loading libraries", 0, 1, "Fetching subscribed libraries…");
   await buildLibraryMap((done, total) =>
     progress("Phase 2/3 · loading libraries", done, total, "", [
-      { label: "Libraries", value: done },
+      { key: "libraries", label: "Libraries loaded", value: done },
     ])
   );
   diag.libraryMap = libraryMapMeta;
@@ -545,7 +545,7 @@ async function runScan() {
   const masterBuckets = Array.from(uniqueMasters.values());
   if (masterBuckets.length && !abort) {
     progress("Phase 2/3 · resolving libraries", 0, masterBuckets.length, "", [
-      { label: "Components checked", value: 0 },
+      { key: "resolved", label: "Components checked", value: 0 },
     ]);
     await runPool(
       masterBuckets,
@@ -600,7 +600,7 @@ async function runScan() {
       },
       LIB_CONCURRENCY,
       (done, total) => progress("Phase 2/3 · resolving libraries", done, total, "", [
-        { label: "Components checked", value: done },
+        { key: "resolved", label: "Components checked", value: done },
       ])
     );
   }
@@ -668,8 +668,7 @@ async function runScan() {
         // Keep the UI alive during this ~285k-node pass.
         if (scanned % CHUNK_SIZE === 0) {
           progress("Phase 3/3 · detach heuristic", scanned, 0, "", [
-            { label: "Layers", value: scanned },
-            { label: "Possible detaches", value: detaches.length },
+            { key: "detaches", label: "Possible detaches", value: detaches.length },
           ]);
           await yieldToUI();
         }

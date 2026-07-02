@@ -30,8 +30,7 @@
   button.danger { color: var(--danger); border-color: #fecaca; background: #fff; }
   .summary { padding: 4px 14px 0; color: var(--muted); }
   .summary b { color: var(--fg); }
-  .progress-wrap { padding: 6px 14px 10px; }
-  .progcard { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .progress-wrap { padding: 8px 14px 12px; }
   .proghead { display: flex; align-items: center; gap: 8px; }
   .progphase { flex: 1; font-weight: 600; }
   .progelapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -41,7 +40,7 @@
     animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .progcounters { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+  .progcounters { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
   .progrow { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
   .progrow .lbl { color: var(--muted); }
   .progrow .val { font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -145,15 +144,13 @@
   </div>
 
   <div class="progress-wrap" id="progWrap" style="display:none">
-    <div class="progcard">
-      <div class="proghead">
-        <span class="spinner"></span>
-        <span id="progPhase" class="progphase">Starting…</span>
-        <span id="progElapsed" class="progelapsed">0s</span>
-      </div>
-      <div id="progCounters" class="progcounters"></div>
-      <div class="summary" id="progText" style="color:var(--muted)"></div>
+    <div class="proghead">
+      <span class="spinner"></span>
+      <span id="progPhase" class="progphase">Starting…</span>
+      <span id="progElapsed" class="progelapsed">0s</span>
     </div>
+    <div id="progCounters" class="progcounters"></div>
+    <div class="summary" id="progText" style="color:var(--muted)"></div>
   </div>
 
   <div class="summary" id="summary"></div>
@@ -239,7 +236,7 @@
     el("summary").style.display = on ? "none" : "block";
     if (on) {
       el("progPhase").textContent = "Starting…";
-      el("progCounters").innerHTML = "";
+      resetCounters();
       el("progText").textContent = "";
       el("progElapsed").textContent = "0s";
       scanStart = Date.now();
@@ -336,27 +333,35 @@
     return libFilterVals.indexOf(r.libraryName || "") !== -1;
   }
 
-  // Render fixed-label progress counters. To avoid flicker we keep the same rows
-  // between updates and only rewrite the number text in place; rows are rebuilt
-  // only when the set of labels changes (i.e. on a phase change).
-  var counterLabels = "";
+  // Progress counters, flicker-free. Each metric (keyed) owns ONE row that is
+  // created the first time it appears and then never touched except for its
+  // number. We NEVER rebuild the container, so nothing jumps: a phase that
+  // introduces a new metric just appends a row below the existing ones; metrics
+  // from earlier phases stay put with their last value.
+  var counterRows = {}; // key -> { valEl }
+  function resetCounters() {
+    counterRows = {};
+    el("progCounters").innerHTML = "";
+  }
   function renderCounters(counters) {
+    if (!counters || !counters.length) return;
     var wrap = el("progCounters");
-    if (!counters || !counters.length) { wrap.innerHTML = ""; counterLabels = ""; return; }
-    var labels = counters.map(function (c) { return c.label; }).join("|");
-    if (labels !== counterLabels) {
-      // Labels changed → (re)build the rows once.
-      wrap.innerHTML = counters.map(function (c) {
-        return '<div class="progrow"><span class="lbl">' + esc(c.label) +
-               '</span><span class="val" data-lbl="' + esc(c.label) + '">' + fmtNum(c.value) + '</span></div>';
-      }).join("");
-      counterLabels = labels;
-      return;
-    }
-    // Same labels → update numbers in place, no DOM churn.
     counters.forEach(function (c) {
-      var v = wrap.querySelector('.val[data-lbl="' + c.label.replace(/"/g, '') + '"]');
-      if (v) v.textContent = fmtNum(c.value);
+      var key = c.key || c.label;
+      var row = counterRows[key];
+      if (!row) {
+        var div = document.createElement("div");
+        div.className = "progrow";
+        var lbl = document.createElement("span");
+        lbl.className = "lbl"; lbl.textContent = c.label;
+        var val = document.createElement("span");
+        val.className = "val"; val.textContent = fmtNum(c.value);
+        div.appendChild(lbl); div.appendChild(val);
+        wrap.appendChild(div);
+        counterRows[key] = { valEl: val };
+      } else {
+        row.valEl.textContent = fmtNum(c.value);
+      }
     });
   }
 
