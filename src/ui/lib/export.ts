@@ -1,44 +1,22 @@
 import type { ScanResult } from "./types";
-import { visibleInstances, type Filters } from "./audit";
+import {
+  groupInstances,
+  sourceLabel,
+  visibleInstances,
+  type Filters,
+} from "./audit";
 
-// Flat, export-ready rows. Respect the same filters as the on-screen view so
-// the export matches what the user sees.
-export function instanceRows(res: ScanResult, f: Filters) {
-  return visibleInstances(res, f).map((r) => ({
-    Component: r.componentName,
-    ComponentKey: r.componentKey || "",
-    Variant: r.variant || "",
-    MasterKey: r.masterKey || "",
-    Kind: r.isMaster ? "master" : "instance",
-    Source:
-      r.origin === "library"
-        ? r.libraryName || "(unknown library)"
-        : r.origin === "local"
-          ? "local"
-          : "unresolved",
-    Origin: r.origin,
-    Library: r.libraryName || "",
-    LibraryKey: r.libraryKey || "",
-    EffectivelyVisible: r.visible ? "yes" : "no",
-    DirectlyVisible: r.directlyVisible ? "yes" : "no",
-    NestedInsideInstance: r.nestedInsideInstance ? "yes" : "no",
-    NestedInsideLibraryInstance: r.nestedInsideLibraryInstance ? "yes" : "no",
-    LibraryInheritedFromParent: r.inheritedFromParent ? "yes" : "no",
-    InSwapSlot: r.inSlot ? "yes" : "no",
-    Depth: r.depth,
-    Page: r.page,
-    Path: r.path,
-    File: res.fileName,
-  }));
-}
-
-export function detachRows(res: ScanResult) {
-  return res.detaches.map((r) => ({
-    Layer: r.layerName,
-    MatchedComponent: r.matchedComponentName,
-    Page: r.page,
-    Path: r.path,
-    File: res.fileName,
+// Aggregated, export-ready rows: one row per component (set), with its library
+// and total instance count. Respects the on-screen filters so the export
+// matches what the user sees. This is what the XLSX export uses.
+export function componentRows(res: ScanResult, f: Filters) {
+  const groups = groupInstances(visibleInstances(res, f));
+  // Most-used first, then A→Z — the natural audit ordering.
+  groups.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  return groups.map((g) => ({
+    Component: g.name,
+    Library: sourceLabel(g), // library name, or "local" / "unresolved"
+    Count: g.count,
   }));
 }
 
@@ -74,19 +52,11 @@ function safeFile(res: ScanResult): string {
 }
 
 export function exportCSV(res: ScanResult, f: Filters) {
-  const base = safeFile(res);
-  download(base + "__instances.csv", toCSV(instanceRows(res, f)), "text/csv");
-  if (res.detaches.length) {
-    setTimeout(
-      () =>
-        download(
-          base + "__detach.csv",
-          toCSV(detachRows(res) as Record<string, unknown>[]),
-          "text/csv"
-        ),
-      200
-    );
-  }
+  download(
+    safeFile(res) + "__component-audit.csv",
+    toCSV(componentRows(res, f) as Record<string, unknown>[]),
+    "text/csv"
+  );
 }
 
 // ---- minimal .xlsx writer ----
@@ -144,8 +114,7 @@ function sheetXml(rows: Record<string, unknown>[]): string {
 export async function exportXLSX(res: ScanResult, f: Filters) {
   const { MiniZip } = await import("./minizip");
   const sheets = [
-    { name: "Instances", rows: instanceRows(res, f) as Record<string, unknown>[] },
-    { name: "Detach", rows: detachRows(res) as Record<string, unknown>[] },
+    { name: "Components", rows: componentRows(res, f) as Record<string, unknown>[] },
   ];
 
   const zip = new MiniZip();
@@ -200,5 +169,5 @@ export async function exportXLSX(res: ScanResult, f: Filters) {
     zip.add(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows))
   );
 
-  download(safeFile(res) + "__audit.xlsx", zip.toBlob());
+  download(safeFile(res) + "__component-audit.xlsx", zip.toBlob());
 }
