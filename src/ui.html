@@ -40,10 +40,11 @@
     animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .progcounters { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
-  .progrow { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
-  .progrow .lbl { color: var(--muted); }
-  .progrow .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .progcounters { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
+  .progitem { white-space: nowrap; }
+  .progitem:not(:last-child):after { content: "·"; color: var(--muted); margin-left: 6px; }
+  .progitem .lbl { color: var(--muted); }
+  .progitem .val { font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 4px; }
   .tabs { display: flex; gap: 4px; padding: 8px 14px 0; }
   .tabs button { border-radius: 6px 6px 0 0; }
   .tabs button.active { background: var(--bg); border-bottom-color: var(--bg); font-weight: 600; }
@@ -150,7 +151,6 @@
       <span id="progElapsed" class="progelapsed">0s</span>
     </div>
     <div id="progCounters" class="progcounters"></div>
-    <div class="summary" id="progText" style="color:var(--muted)"></div>
   </div>
 
   <div class="summary" id="summary"></div>
@@ -237,7 +237,6 @@
     if (on) {
       el("progPhase").textContent = "Starting…";
       resetCounters();
-      el("progText").textContent = "";
       el("progElapsed").textContent = "0s";
       scanStart = Date.now();
       stopElapsed();
@@ -350,14 +349,15 @@
       var key = c.key || c.label;
       var row = counterRows[key];
       if (!row) {
-        var div = document.createElement("div");
-        div.className = "progrow";
+        // New metric → append an inline item; existing items are never touched.
+        var item = document.createElement("span");
+        item.className = "progitem";
         var lbl = document.createElement("span");
         lbl.className = "lbl"; lbl.textContent = c.label;
         var val = document.createElement("span");
         val.className = "val"; val.textContent = fmtNum(c.value);
-        div.appendChild(lbl); div.appendChild(val);
-        wrap.appendChild(div);
+        item.appendChild(lbl); item.appendChild(val);
+        wrap.appendChild(item);
         counterRows[key] = { valEl: val };
       } else {
         row.valEl.textContent = fmtNum(c.value);
@@ -968,12 +968,12 @@
     var msg = event.data.pluginMessage;
     if (!msg) return;
     if (msg.type === "progress") {
+      // Phase line = phase only. Numbers live in the counters row. Never mix
+      // free-text detail in — that was the flickering "N instances found".
       el("progPhase").textContent = msg.phase;
       renderCounters(msg.counters);
-      // Only show the free-text detail line when there are no structured counters.
-      el("progText").textContent = (msg.counters && msg.counters.length) ? "" : (msg.detail || "");
     } else if (msg.type === "warn") {
-      el("progText").textContent = "⚠ " + msg.message;
+      el("progPhase").textContent = "⚠ " + msg.message;
     } else if (msg.type === "focusResult") {
       if (!msg.ok) {
         var sel = el("instTable").querySelector("tr.selected") || el("detachTable").querySelector("tr.selected");

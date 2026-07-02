@@ -698,7 +698,7 @@ async function runScan() {
   pixso.ui.postMessage({
     type: "result",
     fileName,
-    buildId: "BUILD-2026-07-02-tree-view-v8",
+    buildId: "BUILD-vanilla-progress-v2",
     instances,
     detaches,
     aborted: abort,
