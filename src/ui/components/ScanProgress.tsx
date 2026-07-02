@@ -1,65 +1,62 @@
-import { useCallback, useEffect, useState } from "react";
-import { Progress } from "./ui/progress";
-import { useSandboxMessages } from "@/lib/messaging";
-import type { IncomingMsg } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Loading01Icon } from "@hugeicons/core-free-icons";
 
-interface ProgressState {
-  active: boolean;
-  pct: number;
+export interface ProgressInfo {
   phase: string;
   detail: string;
 }
 
-const IDLE: ProgressState = { active: false, pct: 0, phase: "", detail: "" };
+// Presentational only — App owns the message subscription and passes the latest
+// progress down. This component adds two things the sandbox CAN'T provide:
+//  - a spinner that keeps animating even while the sandbox is busy in a single
+//    long await (loadAllPagesAsync, a network call) and sends no messages;
+//  - an elapsed-time ticker driven by the UI clock, so the user always sees the
+//    process is alive and how long it's been running.
+export function ScanProgress({
+  scanning,
+  progress,
+  warn,
+}: {
+  scanning: boolean;
+  progress: ProgressInfo | null;
+  warn: string | null;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number>(0);
 
-// Owns its own progress state and subscribes to progress/warn messages directly.
-// Progress ticks fire hundreds of times per scan; keeping them here means each
-// tick re-renders only this small component, not the whole App (which holds the
-// heavy tables). `active` is driven by the `scanning` prop (scan start/end) and
-// by result/error messages that end a scan.
-export function ScanProgress({ scanning }: { scanning: boolean }) {
-  const [state, setState] = useState<ProgressState>(IDLE);
-  const [warn, setWarn] = useState<string | null>(null);
-
-  const onMessage = useCallback((msg: IncomingMsg) => {
-    if (msg.type === "progress") {
-      const pct = msg.total ? Math.round((msg.done / msg.total) * 100) : 0;
-      setState({
-        active: true,
-        pct,
-        phase: `${msg.phase}  —  ${pct}%`,
-        detail: msg.detail || `${msg.done} / ${msg.total}`,
-      });
-    } else if (msg.type === "warn") {
-      setWarn(msg.message);
-    } else if (msg.type === "result" || msg.type === "error") {
-      setState((s) => ({ ...s, active: false }));
-    }
-  }, []);
-
-  useSandboxMessages(onMessage);
-
-  // A fresh scan clears the last run's warning and resets the bar.
   useEffect(() => {
-    if (scanning) {
-      setWarn(null);
-      setState({ active: true, pct: 0, phase: "Starting…", detail: "" });
-    }
+    if (!scanning) return;
+    startRef.current = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
   }, [scanning]);
-
-  const showActive = scanning || state.active;
 
   return (
     <>
-      {showActive && (
-        <div className="px-3.5 pb-2.5">
-          <Progress value={state.pct} />
-          <div className="mt-1 text-muted-foreground">
-            {state.phase || "Starting…"}
+      {scanning && (
+        <div className="flex items-start gap-2.5 px-3.5 pb-2.5 pt-1">
+          <HugeiconsIcon
+            icon={Loading01Icon}
+            size={16}
+            className="mt-0.5 shrink-0 animate-spin text-primary"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium">
+              {progress?.phase || "Starting…"}
+              <span className="ml-2 font-normal text-muted-foreground">
+                {elapsed}s
+              </span>
+            </div>
+            {progress?.detail && (
+              <div className="truncate text-muted-foreground">
+                {progress.detail}
+              </div>
+            )}
           </div>
-          {state.detail && (
-            <div className="text-muted-foreground">{state.detail}</div>
-          )}
         </div>
       )}
       {warn && (

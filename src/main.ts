@@ -116,6 +116,11 @@ function progress(phase: string, done: number, total: number, detail?: string) {
   pixso.ui.postMessage({ type: "progress", phase, done, total, detail: detail || "" });
 }
 
+// Thousands separator without relying on toLocaleString (unreliable in QuickJS).
+function fmt(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
 // A master component may itself be a variant inside a COMPONENT_SET. For audit
 // purposes the unit is the SET, not the individual variant. Resolve both.
 function resolveComponentIdentity(master: ComponentNode | null, fallbackName: string): {
@@ -303,8 +308,10 @@ async function scan() {
   const tStart = Date.now();
   const timings: Record<string, number> = {};
 
-  // Load all pages if the API supports it.
-  progress("Preparing", 0, 1, "Loading pages…");
+  // Load all pages if the API supports it. On big files this single call can
+  // take a while and sends no progress of its own, so set an honest status
+  // first — the UI spinner keeps animating meanwhile.
+  progress("Preparing", 0, 0, "Loading all pages… (can take a while on large files)");
   try {
     if (typeof (pixso as any).loadAllPagesAsync === "function") {
       await (pixso as any).loadAllPagesAsync();
@@ -317,17 +324,12 @@ async function scan() {
   const currentFileKey = (pixso as any).fileKey || null;
 
   // ===== PHASE 1: walk tree, NO network =====
-  // First a cheap count of total nodes so the progress bar is meaningful.
-  progress("Phase 1/3 · counting", 0, 1, "Counting layers…");
+  // We no longer do a separate counting pass — on a 285k-node file that was a
+  // full second traversal that froze the UI for no real benefit (the bar can't
+  // be accurate before the walk anyway). Instead we report live counters:
+  // layers processed + instances found. totalNodes is just the final tally.
+  progress("Phase 1/3 · scanning", 0, 0, "Starting…");
   let totalNodes = 0;
-  for (const page of pages) {
-    const stack: SceneNode[] = (page as PageNode).children.slice();
-    while (stack.length) {
-      const n = stack.pop()!;
-      totalNodes++;
-      if ("children" in n) for (const k of (n as ChildrenMixin).children) stack.push(k as SceneNode);
-    }
-  }
 
   const instances: InstanceRecord[] = [];
   const allComponentNames = new Set<string>();
@@ -358,6 +360,14 @@ async function scan() {
       const selfVisible =
         "visible" in node ? (node as SceneNode).visible : true;
       const effectivelyVisible = parentVisible && selfVisible;
+
+      // Collect every component/set name for the detach heuristic here, during
+      // the main walk — this replaces a separate full recursive traversal
+      // (walkLocal) that re-visited all 285k nodes and risked a stack overflow
+      // on deep trees.
+      if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
+        allComponentNames.add(node.name);
+      }
 
       let childAncInst = ancInst;
       let childAncLibInst = ancLibInst;
@@ -480,27 +490,20 @@ async function scan() {
       }
 
       if (processed % CHUNK_SIZE === 0) {
-        progress("Phase 1/3 · scanning layers", processed, totalNodes,
-          instances.length + " instances found");
+        // Live counters, no fake percent (total=0 tells the UI to show a count).
+        progress("Phase 1/3 · scanning layers", processed, 0,
+          fmt(processed) + " layers · " + fmt(instances.length) + " instances found");
         await yieldToUI();
       }
     }
   }
+  totalNodes = processed;
   timings.phase1_walk = Date.now() - tPhase1;
-  progress("Phase 1/3 · scanning layers", totalNodes, totalNodes, instances.length + " instances found");
+  progress("Phase 1/3 · scanning layers", processed, 0,
+    processed.toLocaleString() + " layers · " + instances.length.toLocaleString() + " instances found");
 
-  // Local component/set names for detach matching (cheap, no network).
-  try {
-    const walkLocal = (nodes: readonly SceneNode[]) => {
-      for (const n of nodes) {
-        if (n.type === "COMPONENT" || n.type === "COMPONENT_SET") allComponentNames.add(n.name);
-        if ("children" in n) walkLocal((n as ChildrenMixin).children as readonly SceneNode[]);
-      }
-    };
-    for (const page of pages) walkLocal((page as PageNode).children);
-  } catch (e) {
-    /* non-fatal */
-  }
+  // (Component/set names for the detach heuristic are already collected during
+  // the main walk above — no extra traversal needed.)
 
   // ===== PHASE 2: resolve libraries for UNIQUE masters, in parallel =====
   // Diagnostics: capture raw API responses for a sample of masters so we can
@@ -609,28 +612,40 @@ async function scan() {
   const tPhase3 = Date.now();
   const detaches: DetachRecord[] = [];
   if (!abort) {
-    progress("Phase 3/3 · detach heuristic", 0, 1, "Matching layer names…");
+    progress("Phase 3/3 · detach heuristic", 0, 0, "Matching layer names…");
     const nameSet = new Set(Array.from(allComponentNames).map((n) => n.toLowerCase()));
+    let scanned = 0;
     for (const page of pages) {
       if (abort) break;
-      const stack: { node: SceneNode; path: string[] }[] = [];
-      for (const child of (page as PageNode).children) stack.push({ node: child, path: [] });
+      const stack: { node: SceneNode; pathFrame: PathFrame | null }[] = [];
+      for (const child of (page as PageNode).children) stack.push({ node: child, pathFrame: null });
       while (stack.length > 0) {
         if (abort) break;
-        const { node, path } = stack.pop()!;
+        const { node, pathFrame } = stack.pop()!;
+        scanned++;
         const isContainerLike = node.type === "FRAME" || node.type === "GROUP" || node.type === "COMPONENT";
         if (isContainerLike && nameSet.has(node.name.toLowerCase())) {
           detaches.push({
             layerName: node.name,
             matchedComponentName: node.name,
             page: page.name,
-            path: path.join(" / "),
+            path: buildPath(pathFrame),
             nodeId: node.id,
           });
         }
         if ("children" in node) {
-          const nextPath = path.concat([node.name]);
-          for (const kid of (node as ChildrenMixin).children) stack.push({ node: kid, path: nextPath });
+          const childFrame: PathFrame = {
+            name: node.name,
+            parent: pathFrame,
+            depth: (pathFrame ? pathFrame.depth : 0) + 1,
+          };
+          for (const kid of (node as ChildrenMixin).children) stack.push({ node: kid, pathFrame: childFrame });
+        }
+        // Keep the UI alive during this ~285k-node pass.
+        if (scanned % CHUNK_SIZE === 0) {
+          progress("Phase 3/3 · detach heuristic", scanned, 0,
+            fmt(scanned) + " layers · " + fmt(detaches.length) + " possible detaches");
+          await yieldToUI();
         }
       }
     }

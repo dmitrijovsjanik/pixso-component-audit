@@ -12,7 +12,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
-import { ScanProgress } from "./components/ScanProgress";
+import { ScanProgress, type ProgressInfo } from "./components/ScanProgress";
 import { FilterBar } from "./components/FilterBar";
 import { Summary } from "./components/Summary";
 import { InstancesTable } from "./components/InstancesTable";
@@ -43,10 +43,11 @@ const INITIAL_FILTERS: Filters = {
 
 export default function App() {
   const [result, setResult] = useState<ScanResult | null>(null);
-  // Progress/warn live in <ScanProgress> so their high-frequency updates don't
-  // re-render App (which holds the heavy tables). App tracks only whether a scan
-  // is in flight, to toggle the Scan/Cancel buttons.
   const [scanning, setScanning] = useState(false);
+  // Single source of truth for progress. Cheap to re-render during a scan
+  // because result === null then, so the heavy tables aren't mounted.
+  const [progress, setProgress] = useState<ProgressInfo | null>(null);
+  const [warn, setWarn] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [filters, setFiltersState] = useState<Filters>(INITIAL_FILTERS);
@@ -77,10 +78,15 @@ export default function App() {
     });
   }, []);
 
-  // App only reacts to terminal messages (result/error) + focus results — all
-  // low-frequency. Progress/warn are handled inside <ScanProgress>.
+  // ONE subscription for all sandbox messages. (An earlier version had a second
+  // subscription in ScanProgress, which double-handled messages and made the
+  // progress jump/rewind.)
   const handleMessage = useCallback((msg: IncomingMsg) => {
-    if (msg.type === "focusResult") {
+    if (msg.type === "progress") {
+      setProgress({ phase: msg.phase, detail: msg.detail || "" });
+    } else if (msg.type === "warn") {
+      setWarn(msg.message);
+    } else if (msg.type === "focusResult") {
       if (!msg.ok) {
         setSelectedId((cur) => {
           if (cur) {
@@ -105,6 +111,8 @@ export default function App() {
   const startScan = () => {
     setScanning(true);
     setError(null);
+    setWarn(null);
+    setProgress(null);
     post({ type: "scan" });
   };
 
@@ -222,7 +230,7 @@ export default function App() {
       </div>
 
       {/* Progress (owns its own high-frequency state) */}
-      <ScanProgress scanning={scanning} />
+      <ScanProgress scanning={scanning} progress={progress} warn={warn} />
 
       {error && (
         <div className="px-3.5 py-1 text-destructive">Error: {error}</div>
