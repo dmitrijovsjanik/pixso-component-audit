@@ -83,7 +83,11 @@ export default function App() {
   // progress jump/rewind.)
   const handleMessage = useCallback((msg: IncomingMsg) => {
     if (msg.type === "progress") {
-      setProgress({ phase: msg.phase, detail: msg.detail || "" });
+      setProgress({
+        phase: msg.phase,
+        detail: msg.detail || "",
+        counters: msg.counters,
+      });
     } else if (msg.type === "warn") {
       setWarn(msg.message);
     } else if (msg.type === "focusResult") {
@@ -113,6 +117,7 @@ export default function App() {
     setError(null);
     setWarn(null);
     setProgress(null);
+    setResult(null); // clear the previous scan's table so it's obvious a new scan is running
     post({ type: "scan" });
   };
 
@@ -236,10 +241,10 @@ export default function App() {
         <div className="px-3.5 py-1 text-destructive">Error: {error}</div>
       )}
 
-      {result && <Summary result={result} filters={filters} />}
+      {!scanning && result && <Summary result={result} filters={filters} />}
 
-      {/* Body */}
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* Body — hidden during a scan; the progress block stands in for it. */}
+      <div className="min-h-0 flex-1 overflow-auto" hidden={scanning}>
         <Tabs
           value={tab}
           onValueChange={(v) => setTab(v as "instances" | "detach")}

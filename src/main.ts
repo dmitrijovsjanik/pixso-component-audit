@@ -115,14 +115,17 @@ function yieldToUI(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
 
-// Progress with explicit phase, current/total counts and an optional detail line.
-function progress(phase: string, done: number, total: number, detail?: string) {
-  pixso.ui.postMessage({ type: "progress", phase, done, total, detail: detail || "" });
-}
-
-// Thousands separator without relying on toLocaleString (unreliable in QuickJS).
-function fmt(n: number): string {
-  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+// Progress with explicit phase, current/total counts, and either a detail line
+// or a set of fixed-label counters (Layers / Instances / …) the UI renders as
+// stable rows with numbers growing in place (no flickering re-composed string).
+function progress(
+  phase: string,
+  done: number,
+  total: number,
+  detail?: string,
+  counters?: { label: string; value: number }[]
+) {
+  pixso.ui.postMessage({ type: "progress", phase, done, total, detail: detail || "", counters });
 }
 
 // A master component may itself be a variant inside a COMPONENT_SET. For audit
@@ -505,16 +508,20 @@ async function runScan() {
 
       if (processed % CHUNK_SIZE === 0) {
         // Live counters, no fake percent (total=0 tells the UI to show a count).
-        progress("Phase 1/3 · scanning layers", processed, 0,
-          fmt(processed) + " layers · " + fmt(instances.length) + " instances found");
+        progress("Phase 1/3 · scanning layers", processed, 0, "", [
+          { label: "Layers", value: processed },
+          { label: "Instances", value: instances.length },
+        ]);
         await yieldToUI();
       }
     }
   }
   totalNodes = processed;
   timings.phase1_walk = Date.now() - tPhase1;
-  progress("Phase 1/3 · scanning layers", processed, 0,
-    processed.toLocaleString() + " layers · " + instances.length.toLocaleString() + " instances found");
+  progress("Phase 1/3 · scanning layers", processed, 0, "", [
+    { label: "Layers", value: processed },
+    { label: "Instances", value: instances.length },
+  ]);
 
   // (Component/set names for the detach heuristic are already collected during
   // the main walk above — no extra traversal needed.)
@@ -529,15 +536,17 @@ async function runScan() {
   // Build the reliable key->library map ONCE before resolving masters.
   progress("Phase 2/3 · loading libraries", 0, 1, "Fetching subscribed libraries…");
   await buildLibraryMap((done, total) =>
-    progress("Phase 2/3 · loading libraries", done, total,
-      "Fetched " + done + " / " + total + " libraries")
+    progress("Phase 2/3 · loading libraries", done, total, "", [
+      { label: "Libraries", value: done },
+    ])
   );
   diag.libraryMap = libraryMapMeta;
 
   const masterBuckets = Array.from(uniqueMasters.values());
   if (masterBuckets.length && !abort) {
-    progress("Phase 2/3 · resolving libraries", 0, masterBuckets.length,
-      masterBuckets.length + " unique components to check");
+    progress("Phase 2/3 · resolving libraries", 0, masterBuckets.length, "", [
+      { label: "Components checked", value: 0 },
+    ]);
     await runPool(
       masterBuckets,
       async (bucket) => {
@@ -590,8 +599,9 @@ async function runScan() {
         }
       },
       LIB_CONCURRENCY,
-      (done, total) => progress("Phase 2/3 · resolving libraries", done, total,
-        done + " / " + total + " components")
+      (done, total) => progress("Phase 2/3 · resolving libraries", done, total, "", [
+        { label: "Components checked", value: done },
+      ])
     );
   }
   // Probe a few non-remote masters too — to check none of them are actually library.
@@ -657,8 +667,10 @@ async function runScan() {
         }
         // Keep the UI alive during this ~285k-node pass.
         if (scanned % CHUNK_SIZE === 0) {
-          progress("Phase 3/3 · detach heuristic", scanned, 0,
-            fmt(scanned) + " layers · " + fmt(detaches.length) + " possible detaches");
+          progress("Phase 3/3 · detach heuristic", scanned, 0, "", [
+            { label: "Layers", value: scanned },
+            { label: "Possible detaches", value: detaches.length },
+          ]);
           await yieldToUI();
         }
       }

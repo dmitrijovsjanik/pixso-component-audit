@@ -1,18 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Loading01Icon } from "@hugeicons/core-free-icons";
+import type { ProgressCounter } from "@/lib/types";
 
 export interface ProgressInfo {
   phase: string;
   detail: string;
+  counters?: ProgressCounter[];
 }
 
-// Presentational only — App owns the message subscription and passes the latest
-// progress down. This component adds two things the sandbox CAN'T provide:
-//  - a spinner that keeps animating even while the sandbox is busy in a single
-//    long await (loadAllPagesAsync, a network call) and sends no messages;
-//  - an elapsed-time ticker driven by the UI clock, so the user always sees the
-//    process is alive and how long it's been running.
+function fmt(n: number): string {
+  // Thousands separator; tabular-nums keeps digit width fixed so numbers grow
+  // in place without the row jittering.
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+// A single counter row: static label, number that updates in place.
+function Counter({ label, value }: ProgressCounter) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-semibold tabular-nums">{fmt(value)}</span>
+    </div>
+  );
+}
+
+// Live scan status. Instead of a re-composed string (which flickered), it shows
+// a spinner, the phase, an elapsed timer, and a small set of fixed-label
+// counters whose numbers grow in place. The spinner + timer are UI-driven, so
+// they stay alive even while the sandbox is busy in one long await.
 export function ScanProgress({
   scanning,
   progress,
@@ -35,33 +51,42 @@ export function ScanProgress({
     return () => clearInterval(id);
   }, [scanning]);
 
+  if (!scanning) {
+    return warn ? (
+      <div className="px-3.5 py-1 text-muted-foreground">⚠ {warn}</div>
+    ) : null;
+  }
+
+  const counters = progress?.counters || [];
+
   return (
-    <>
-      {scanning && (
-        <div className="flex items-start gap-2.5 px-3.5 pb-2.5 pt-1">
-          <HugeiconsIcon
-            icon={Loading01Icon}
-            size={16}
-            className="mt-0.5 shrink-0 animate-spin text-primary"
-          />
-          <div className="min-w-0 flex-1">
-            <div className="font-medium">
-              {progress?.phase || "Starting…"}
-              <span className="ml-2 font-normal text-muted-foreground">
-                {elapsed}s
-              </span>
-            </div>
-            {progress?.detail && (
-              <div className="truncate text-muted-foreground">
-                {progress.detail}
-              </div>
-            )}
-          </div>
+    <div className="mx-3.5 my-2 rounded-lg border bg-card p-4">
+      <div className="flex items-center gap-2.5">
+        <HugeiconsIcon
+          icon={Loading01Icon}
+          size={18}
+          className="shrink-0 animate-spin text-primary"
+        />
+        <span className="flex-1 font-medium">
+          {progress?.phase || "Starting…"}
+        </span>
+        <span className="tabular-nums text-muted-foreground">{elapsed}s</span>
+      </div>
+
+      {counters.length > 0 && (
+        <div className="mt-3 space-y-1 text-sm">
+          {counters.map((c) => (
+            <Counter key={c.label} label={c.label} value={c.value} />
+          ))}
         </div>
       )}
-      {warn && (
-        <div className="px-3.5 py-1 text-muted-foreground">⚠ {warn}</div>
+      {!counters.length && progress?.detail && (
+        <div className="mt-2 text-muted-foreground">{progress.detail}</div>
       )}
-    </>
+
+      {warn && (
+        <div className="mt-2 border-t pt-2 text-muted-foreground">⚠ {warn}</div>
+      )}
+    </div>
   );
 }

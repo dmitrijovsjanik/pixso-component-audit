@@ -48,12 +48,21 @@ export interface ScanResult {
   diag?: unknown;
 }
 
+export interface ProgressCounter {
+  label: string;
+  value: number;
+}
+
 export interface ProgressMsg {
   type: "progress";
   phase: string;
   done: number;
   total: number;
   detail?: string;
+  // Fixed-label counters (e.g. Layers / Instances) whose numbers grow in place.
+  // Preferred over `detail` so the UI shows stable rows instead of a
+  // re-composed, flickering string.
+  counters?: ProgressCounter[];
 }
 
 export type IncomingMsg =
