@@ -27,6 +27,10 @@ const LIB_CONCURRENCY = 8; // parallel getLibraryInfoAsync calls in phase 2
 const LIB_TIMEOUT_MS = 4000;
 
 let abort = false;
+// Guard against a second scan starting while one is already running. Two
+// concurrent scans share the module-level abort flag and library caches and
+// interleave their progress messages (the "phase 1-2-1-2 jumping" bug).
+let scanning = false;
 
 interface InstanceRecord {
   componentName: string; // set-level name (variants collapsed)
@@ -304,6 +308,16 @@ async function runPool<T>(
 // ---------- main scan ----------
 
 async function scan() {
+  if (scanning) return; // a scan is already in flight — ignore duplicate starts
+  scanning = true;
+  try {
+    await runScan();
+  } finally {
+    scanning = false;
+  }
+}
+
+async function runScan() {
   abort = false;
   const tStart = Date.now();
   const timings: Record<string, number> = {};
