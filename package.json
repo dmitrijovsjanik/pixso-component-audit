@@ -1,39 +1,13 @@
 {
   "name": "pixso-component-audit",
   "version": "0.1.0",
-  "description": "Audit design-system component usage across a Pixso file — flat registry, nesting analysis, detach heuristic, CSV/xlsx export.",
+  "description": "Audit design-system component usage across a Pixso file — flat registry, nesting analysis, detach heuristic, CSV/XLSX export.",
   "scripts": {
-    "build": "npm run build:sandbox && npm run build:ui",
-    "build:sandbox": "tsc -p tsconfig.json",
-    "build:ui": "vite build",
-    "watch:sandbox": "tsc -w -p tsconfig.json",
-    "watch:ui": "vite build --watch",
-    "typecheck:ui": "tsc -p tsconfig.ui.json"
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -w -p tsconfig.json"
   },
   "devDependencies": {
     "@pixso/plugin-typings": "latest",
-    "@tailwindcss/vite": "^4.3.2",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.3",
-    "tailwindcss": "^4.3.2",
-    "typescript": "^5.0.0",
-    "vite": "^8.1.3",
-    "vite-plugin-singlefile": "^2.3.3"
-  },
-  "dependencies": {
-    "@hugeicons/core-free-icons": "^4.2.2",
-    "@hugeicons/react": "^1.1.9",
-    "@radix-ui/react-checkbox": "^1.3.6",
-    "@radix-ui/react-popover": "^1.1.18",
-    "@radix-ui/react-progress": "^1.1.11",
-    "@radix-ui/react-select": "^2.3.2",
-    "@radix-ui/react-slot": "^1.3.0",
-    "@radix-ui/react-tabs": "^1.1.16",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "tailwind-merge": "^3.6.0"
+    "typescript": "^5.0.0"
   }
 }

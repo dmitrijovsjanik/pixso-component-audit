@@ -1,5 +1,5 @@
 {
-  "_comment": "Sandbox build only (src/main.ts -> dist/main.js via tsc). The React UI is built by Vite; see tsconfig.ui.json.",
+  "_comment": "Sandbox build (src/main.ts -> dist/main.js via tsc). The UI is a single self-contained src/ui.html loaded raw by Pixso — no bundler.",
   "compilerOptions": {
     "target": "ES2017",
     "lib": ["ES2017"],

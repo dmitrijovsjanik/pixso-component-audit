@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --border: #e5e7eb;
+    --accent: #2563eb; --accent-fg: #fff; --danger: #dc2626;
+    --chip-local: #eef2ff; --chip-local-fg: #4338ca;
+    --chip-lib: #ecfdf5; --chip-lib-fg: #047857;
+    --chip-unknown: #fef2f2; --chip-unknown-fg: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  header {
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  header h1 { font-size: 13px; margin: 0; font-weight: 600; flex: 1; }
+  .toolbar { padding: 10px 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button {
+    font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: #f9fafb; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.danger { color: var(--danger); border-color: #fecaca; background: #fff; }
+  .summary { padding: 4px 14px 0; color: var(--muted); }
+  .summary b { color: var(--fg); }
+  .progress-wrap { padding: 6px 14px 10px; }
+  .progcard { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .proghead { display: flex; align-items: center; gap: 8px; }
+  .progphase { flex: 1; font-weight: 600; }
+  .progelapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; flex: none;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progcounters { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+  .progrow { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+  .progrow .lbl { color: var(--muted); }
+  .progrow .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tabs { display: flex; gap: 4px; padding: 8px 14px 0; }
+  .tabs button { border-radius: 6px 6px 0 0; }
+  .tabs button.active { background: var(--bg); border-bottom-color: var(--bg); font-weight: 600; }
+  .tablewrap { overflow: auto; max-height: 340px; margin: 0 14px 10px; border: 1px solid var(--border); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 11px; table-layout: fixed; }
+  th, td {
+    text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* draggable column resize handle (sticky th is already a positioning context) */
+  th .resizer {
+    position: absolute; top: 0; right: 0; width: 6px; height: 100%;
+    cursor: col-resize; user-select: none;
+  }
+  th .resizer:hover, th .resizer.dragging { background: var(--accent); opacity: .4; }
+  thead th { position: sticky; top: 0; background: #f9fafb; z-index: 1; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { background: #eef2f7; }
+  .sortarrow { color: #cbd5e1; font-size: 10px; }
+  .sortarrow.on { color: var(--accent); }
+  td.path { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+  tr.focusable { cursor: pointer; }
+  tr.focusable:hover td { background: #eff6ff; }
+  tr.focusable.selected td { background: #dbeafe; }
+  tr.focusable.notfound td { background: #fee2e2; }
+  tr.grp { cursor: pointer; background: #fafafa; }
+  tr.grp:hover td { background: #f1f5f9; }
+  tr.var { cursor: pointer; }
+  tr.var:hover td { background: #f8fafc; }
+  .tw { display: inline-block; width: 12px; color: var(--muted); font-size: 9px; }
+  .hiddenmark { color: #9ca3af; }
+  tr.leaf td:first-child { color: #374151; }
+  .toggle-inline { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--fg); }
+  .toggle-inline input { margin: 0; }
+  .chip { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .chip.local { background: var(--chip-local); color: var(--chip-local-fg); }
+  .chip.library { background: var(--chip-lib); color: var(--chip-lib-fg); }
+  .chip.unknown { background: var(--chip-unknown); color: var(--chip-unknown-fg); }
+  .chip.master { background: #fef3c7; color: #92400e; }
+  .flag { color: var(--muted); }
+  .flag.on { color: var(--fg); font-weight: 600; }
+  .empty { padding: 24px; text-align: center; color: var(--muted); }
+  .note { padding: 6px 14px; color: var(--muted); font-style: italic; }
+  .filterbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; flex-wrap: wrap; }
+  .filterbar input[type="text"] {
+    flex: 1; min-width: 160px; font: inherit; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  .filterbar select {
+    font: inherit; padding: 6px 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; max-width: 200px;
+  }
+  .filterbar .toggle-inline { font-size: 11px; white-space: nowrap; }
+  .filtercount { color: var(--muted); font-size: 11px; white-space: nowrap; margin-left: auto; }
+  /* library multi-select */
+  .multiselect { position: relative; }
+  .ms-btn {
+    font: inherit; padding: 6px 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; cursor: pointer; max-width: 200px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+  }
+  .ms-btn:after { content: " ▾"; color: var(--muted); }
+  .ms-menu {
+    position: absolute; z-index: 20; top: calc(100% + 4px); left: 0;
+    min-width: 200px; max-width: 280px; max-height: 260px; overflow: auto;
+    background: #fff; border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.12); padding: 4px;
+  }
+  .ms-menu label {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border-radius: 4px; cursor: pointer; user-select: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ms-menu label:hover { background: #eff6ff; }
+  .ms-menu input { margin: 0; }
+  .ms-clear {
+    display: block; width: 100%; text-align: left; padding: 4px 8px; margin-bottom: 2px;
+    font: inherit; font-size: 11px; color: var(--muted); background: none;
+    border: none; border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .ms-clear:hover { color: var(--fg); }
+  footer { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+  footer .spacer { flex: 1; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>DS Component Audit</h1>
+    <span id="fileName" class="flag"></span>
+  </header>
+
+  <div class="toolbar">
+    <button id="scanBtn" class="primary">Scan file</button>
+    <button id="cancelBtn" class="danger" disabled>Cancel</button>
+    <div class="spacer" style="flex:1"></div>
+    <button id="csvBtn" disabled>Export CSV</button>
+    <button id="xlsxBtn" disabled>Export XLSX</button>
+  </div>
+
+  <div class="progress-wrap" id="progWrap" style="display:none">
+    <div class="progcard">
+      <div class="proghead">
+        <span class="spinner"></span>
+        <span id="progPhase" class="progphase">Starting…</span>
+        <span id="progElapsed" class="progelapsed">0s</span>
+      </div>
+      <div id="progCounters" class="progcounters"></div>
+      <div class="summary" id="progText" style="color:var(--muted)"></div>
+    </div>
+  </div>
+
+  <div class="summary" id="summary"></div>
+
+  <div class="tabs" style="align-items:center">
+    <button data-tab="instances" class="active">Instances</button>
+    <button data-tab="detach">Detach (heuristic)</button>
+  </div>
+
+  <div id="instancesView">
+    <div class="filterbar">
+      <input type="text" id="search" placeholder="Search component name…" />
+      <select id="originFilter" title="Filter by origin">
+        <option value="">All origins</option>
+        <option value="library">Library</option>
+        <option value="local">Local</option>
+        <option value="unknown">Unresolved</option>
+      </select>
+      <div class="multiselect" id="libFilterWrap">
+        <button type="button" id="libFilterBtn" class="ms-btn" title="Filter by library">All libraries</button>
+        <div id="libFilterMenu" class="ms-menu" style="display:none"></div>
+      </div>
+      <select id="viewMode" title="View mode">
+        <option value="flat">Flat (by name)</option>
+        <option value="tree">Tree (nesting)</option>
+      </select>
+      <label class="toggle-inline"><input type="checkbox" id="showNested" /> Nested</label>
+      <label class="toggle-inline"><input type="checkbox" id="showHidden" /> Hidden</label>
+      <span class="filtercount" id="filterCount"></span>
+    </div>
+    <div class="tablewrap"><table id="instTable">
+      <colgroup>
+        <col id="col-name" style="width:330px" />
+        <col id="col-source" style="width:230px" />
+        <col id="col-count" style="width:70px" />
+        <col id="col-page" style="width:180px" />
+      </colgroup>
+      <thead></thead>
+      <tbody><tr><td class="empty">No scan yet. Click “Scan file”.</td></tr></tbody>
+    </table></div>
+  </div>
+  <div id="detachView" style="display:none">
+    <div class="note">Name-based match only — a layer that is NOT an instance but whose name matches a known component. May include false positives.</div>
+    <div class="tablewrap"><table id="detachTable"><tbody><tr><td class="empty">—</td></tr></tbody></table></div>
+  </div>
+
+  <div id="debugPanel" style="display:none; padding:0 14px 10px">
+    <div class="summary" style="margin:0 0 4px">Diagnostic (select all &amp; copy manually):</div>
+    <textarea id="debugText" readonly style="width:100%; height:160px; font:11px/1.4 monospace; border:1px solid var(--border); border-radius:6px; padding:8px; resize:vertical;"></textarea>
+  </div>
+
+  <footer>
+    <button id="debugBtn">Show debug</button>
+    <button id="copyBtn">Copy</button>
+    <div class="spacer"></div>
+    <button id="closeBtn">Close</button>
+  </footer>
+
+<script>
+  var post = function (m) { parent.postMessage({ pluginMessage: m }, "*"); };
+  var lastResult = null;
+  var showHidden = false;
+  var showNested = false;
+  var searchQuery = "";
+  var originFilterVal = "";
+  var libFilterVals = [];  // selected library names; empty = all libraries
+  var sortKey = "count";   // default: most-used first
+  var sortDir = -1;        // -1 desc, 1 asc
+  var viewMode = "flat";   // "flat" (group by name) or "tree" (nesting)
+
+  var el = function (id) { return document.getElementById(id); };
+
+  var elapsedTimer = null;
+  var scanStart = 0;
+  function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
+  function setScanning(on) {
+    el("scanBtn").disabled = on;
+    el("cancelBtn").disabled = !on;
+    el("progWrap").style.display = on ? "block" : "none";
+    // Hide the results while a scan runs, so a stale table doesn't look "live".
+    el("instancesView").style.display = on ? "none" : (currentTab === "instances" ? "block" : "none");
+    el("detachView").style.display = on ? "none" : (currentTab === "detach" ? "block" : "none");
+    el("summary").style.display = on ? "none" : "block";
+    if (on) {
+      el("progPhase").textContent = "Starting…";
+      el("progCounters").innerHTML = "";
+      el("progText").textContent = "";
+      el("progElapsed").textContent = "0s";
+      scanStart = Date.now();
+      stopElapsed();
+      elapsedTimer = setInterval(function () {
+        el("progElapsed").textContent = Math.floor((Date.now() - scanStart) / 1000) + "s";
+      }, 1000);
+    } else {
+      stopElapsed();
+    }
+  }
+
+  el("scanBtn").onclick = function () { setScanning(true); post({ type: "scan" }); };
+  el("cancelBtn").onclick = function () { post({ type: "cancel" }); };
+  el("closeBtn").onclick = function () { post({ type: "close" }); };
+  function buildDebug() {
+    if (!lastResult) return "no data yet — run a scan first";
+    var payload = {
+      buildId: lastResult.buildId || "(no buildId — OLD BUILD RUNNING)",
+      fileName: lastResult.fileName,
+      stats: lastResult.stats,
+      diag: lastResult.diag,
+      originCounts: (function () {
+        var c = { local: 0, library: 0, unknown: 0 };
+        lastResult.instances.forEach(function (r) { c[r.origin] = (c[r.origin] || 0) + 1; });
+        return c;
+      })()
+    };
+    return JSON.stringify(payload, null, 2);
+  }
+
+  el("debugBtn").onclick = function () {
+    var panel = el("debugPanel");
+    var showing = panel.style.display !== "none";
+    if (showing) { panel.style.display = "none"; el("debugBtn").textContent = "Show debug"; return; }
+    el("debugText").value = buildDebug();
+    panel.style.display = "block";
+    el("debugBtn").textContent = "Hide debug";
+  };
+
+  el("copyBtn").onclick = function () {
+    var ta = el("debugText");
+    if (!ta.value) ta.value = buildDebug();
+    el("debugPanel").style.display = "block";
+    el("debugBtn").textContent = "Hide debug";
+    ta.focus(); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    if (!ok && navigator.clipboard) {
+      navigator.clipboard.writeText(ta.value).then(function(){}, function(){});
+    }
+    el("copyBtn").textContent = ok ? "Copied!" : "Select ↑ & Cmd+C";
+    setTimeout(function(){ el("copyBtn").textContent = "Copy"; }, 1600);
+  };
+
+  // Click a row → focus that node on the canvas (delegated on both tables).
+  function wireFocus(tableId) {
+    el(tableId).addEventListener("click", function (ev) {
+      var tr = ev.target && ev.target.closest ? ev.target.closest("tr.focusable") : null;
+      if (!tr) return;
+      var id = tr.getAttribute("data-node-id");
+      if (!id) return;
+      // Highlight the selected row within this table.
+      var prev = el(tableId).querySelector("tr.selected");
+      if (prev) prev.classList.remove("selected");
+      tr.classList.add("selected");
+      post({ type: "focus", nodeId: id });
+    });
+  }
+  wireFocus("instTable");
+  wireFocus("detachTable");
+
+  // Tabs
+  var currentTab = "instances";
+  var tabBtns = document.querySelectorAll(".tabs button");
+  tabBtns.forEach(function (b) {
+    b.onclick = function () {
+      tabBtns.forEach(function (x) { x.classList.remove("active"); });
+      b.classList.add("active");
+      currentTab = b.getAttribute("data-tab");
+      el("instancesView").style.display = currentTab === "instances" ? "block" : "none";
+      el("detachView").style.display = currentTab === "detach" ? "block" : "none";
+    };
+  });
+
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  // Thousands separator (spaces), no toLocaleString (unreliable in some runtimes).
+  function fmtNum(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+
+  // Library multi-select match: empty selection = all; otherwise membership.
+  function libMatches(r) {
+    if (!libFilterVals.length) return true;
+    return libFilterVals.indexOf(r.libraryName || "") !== -1;
+  }
+
+  // Render fixed-label progress counters. To avoid flicker we keep the same rows
+  // between updates and only rewrite the number text in place; rows are rebuilt
+  // only when the set of labels changes (i.e. on a phase change).
+  var counterLabels = "";
+  function renderCounters(counters) {
+    var wrap = el("progCounters");
+    if (!counters || !counters.length) { wrap.innerHTML = ""; counterLabels = ""; return; }
+    var labels = counters.map(function (c) { return c.label; }).join("|");
+    if (labels !== counterLabels) {
+      // Labels changed → (re)build the rows once.
+      wrap.innerHTML = counters.map(function (c) {
+        return '<div class="progrow"><span class="lbl">' + esc(c.label) +
+               '</span><span class="val" data-lbl="' + esc(c.label) + '">' + fmtNum(c.value) + '</span></div>';
+      }).join("");
+      counterLabels = labels;
+      return;
+    }
+    // Same labels → update numbers in place, no DOM churn.
+    counters.forEach(function (c) {
+      var v = wrap.querySelector('.val[data-lbl="' + c.label.replace(/"/g, '') + '"]');
+      if (v) v.textContent = fmtNum(c.value);
+    });
+  }
+
+  // Source = library name if from a library, else "local" / "unresolved".
+  function sourceLabel(g) {
+    if (g.origin === "library") return g.library || "(unknown library)";
+    if (g.origin === "local") return "local";
+    return "unresolved";
+  }
+  function sourceHtml(g) {
+    var cls = g.origin === "library" ? "library" : (g.origin === "local" ? "local" : "unknown");
+    return '<span class="chip ' + cls + '">' + esc(sourceLabel(g)) + '</span>';
+  }
+  // "master" badge if this component appears as a defined master in the file.
+  function masterBadge(g) {
+    return g.hasMaster ? ' <span class="chip master">master</span>' : "";
+  }
+
+  // Group instances: Component (set) → Variant → instances.
+  function groupInstances(rows) {
+    var byComp = {};
+    var order = [];
+    rows.forEach(function (r) {
+      var ck = r.componentKey || r.componentName;
+      if (!byComp[ck]) {
+        byComp[ck] = { key: ck, name: r.componentName, origin: r.origin, library: r.libraryName,
+                       hasMaster: false, hasInstance: false,
+                       count: 0, variants: {}, variantOrder: [] };
+        order.push(ck);
+      }
+      var g = byComp[ck];
+      g.count++;
+      if (r.isMaster) g.hasMaster = true; else g.hasInstance = true;
+      // library/origin: prefer a definitive library origin if any instance has it
+      if (r.origin === "library") { g.origin = "library"; g.library = r.libraryName; }
+      var vk = r.variant || "(no variants)";
+      if (!g.variants[vk]) { g.variants[vk] = { name: vk, count: 0, items: [] }; g.variantOrder.push(vk); }
+      g.variants[vk].count++;
+      g.variants[vk].items.push(r);
+    });
+    return order.map(function (k) { return byComp[k]; });
+  }
+
+  function sortGroups(groups) {
+    var dir = sortDir;
+    groups.sort(function (a, b) {
+      var av, bv;
+      if (sortKey === "count") { av = a.count; bv = b.count; }
+      else if (sortKey === "source") { av = sourceLabel(a).toLowerCase(); bv = sourceLabel(b).toLowerCase(); }
+      else { av = (a.name || "").toLowerCase(); bv = (b.name || "").toLowerCase(); }
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      // Secondary sort: always by name A→Z (regardless of primary direction),
+      // so equal-count/origin/library rows have a stable alphabetical order.
+      var an = (a.name || "").toLowerCase(), bn = (b.name || "").toLowerCase();
+      if (an < bn) return -1;
+      if (an > bn) return 1;
+      return 0;
+    });
+  }
+
+  // Click a column header → sort. Same column again flips direction.
+  // Ignore clicks that land on the resize handle.
+  function wireSort() {
+    el("instTable").addEventListener("click", function (ev) {
+      if (ev.target && ev.target.classList && ev.target.classList.contains("resizer")) return;
+      var th = ev.target.closest ? ev.target.closest("th.sortable") : null;
+      if (!th) return;
+      var key = th.getAttribute("data-sort");
+      if (sortKey === key) { sortDir = -sortDir; }
+      else { sortKey = key; sortDir = (key === "count") ? -1 : 1; } // count defaults desc, text asc
+      if (lastResult) renderList(lastResult);
+    });
+  }
+  wireSort();
+
+  // Draggable column resizing. Handles live inside each <th>; they set the
+  // width on the matching <col> so the whole column resizes.
+  function wireResizers() {
+    var table = el("instTable");
+    var active = null, startX = 0, startW = 0, colEl = null;
+    table.addEventListener("mousedown", function (ev) {
+      var rz = ev.target;
+      if (!rz.classList || !rz.classList.contains("resizer")) return;
+      var th = rz.closest("th");
+      var colId = th.getAttribute("data-col");
+      colEl = document.getElementById(colId);
+      if (!colEl) return;
+      active = rz; rz.classList.add("dragging");
+      startX = ev.clientX;
+      startW = colEl.getBoundingClientRect ? colEl.getBoundingClientRect().width : parseInt(colEl.style.width) || 100;
+      // fallback: use th width
+      if (!startW) startW = th.getBoundingClientRect().width;
+      ev.preventDefault();
+      document.body.style.cursor = "col-resize";
+    });
+    document.addEventListener("mousemove", function (ev) {
+      if (!active || !colEl) return;
+      var w = Math.max(48, startW + (ev.clientX - startX));
+      colEl.style.width = w + "px";
+    });
+    document.addEventListener("mouseup", function () {
+      if (active) { active.classList.remove("dragging"); active = null; colEl = null; document.body.style.cursor = ""; }
+    });
+  }
+  wireResizers();
+
+  function renderHead() {
+    function arrow(key) {
+      if (sortKey !== key) return '<span class="sortarrow"> ↕</span>';
+      return '<span class="sortarrow on">' + (sortDir > 0 ? " ↑" : " ↓") + '</span>';
+    }
+    var rz = '<span class="resizer"></span>';
+    el("instTable").querySelector("thead").innerHTML = '<tr>' +
+      '<th class="sortable" data-sort="name" data-col="col-name">Component / variant / instance' + arrow("name") + rz + '</th>' +
+      '<th class="sortable" data-sort="source" data-col="col-source">Source' + arrow("source") + rz + '</th>' +
+      '<th class="sortable" data-sort="count" data-col="col-count">Count' + arrow("count") + rz + '</th>' +
+      '<th data-col="col-page">Page' + rz + '</th></tr>';
+  }
+
+  function renderInstances(rows) {
+    var t = el("instTable").querySelector("tbody");
+    renderHead();
+    if (!rows.length) { t.innerHTML = '<tr><td class="empty">No instances found.</td></tr>'; return; }
+    var groups = groupInstances(rows);
+    sortGroups(groups);
+    var html = [];
+
+    groups.forEach(function (g, gi) {
+      var gid = "g" + gi;
+      var hasVariants = !(g.variantOrder.length === 1 && g.variantOrder[0] === "(no variants)");
+
+      // Single instance, no variants → nothing to expand. One clickable row.
+      if (g.count === 1 && !hasVariants) {
+        var only = g.variants[g.variantOrder[0]].items[0];
+        html.push(
+          '<tr class="grp leaf focusable" data-node-id="' + esc(only.nodeId) + '" title="Click to focus on canvas">' +
+          '<td><span class="tw" style="visibility:hidden">▶</span> <b>' + esc(g.name) + '</b>' + masterBadge(g) +
+          (only.visible ? "" : ' <span class="hiddenmark" title="hidden">◌</span>') + '</td>' +
+          '<td>' + sourceHtml(g) + '</td>' +
+          '<td><b>1</b></td>' +
+          '<td>' + esc(only.page) + '</td></tr>'
+        );
+        return;
+      }
+
+      html.push(
+        '<tr class="grp" data-toggle="' + gid + '">' +
+        '<td><span class="tw">▶</span> <b>' + esc(g.name) + '</b>' + masterBadge(g) + '</td>' +
+        '<td>' + sourceHtml(g) + '</td>' +
+        '<td><b>' + g.count + '</b></td>' +
+        '<td></td></tr>'
+      );
+
+      g.variantOrder.forEach(function (vk, vi) {
+        var v = g.variants[vk];
+        var vid = gid + "v" + vi;
+        if (hasVariants) {
+          html.push(
+            '<tr class="var child-of-' + gid + '" data-toggle="' + vid + '" style="display:none">' +
+            '<td style="padding-left:24px"><span class="tw">▶</span> ' + esc(v.name) + '</td>' +
+            '<td></td><td>' + v.count + '</td><td></td></tr>'
+          );
+        }
+        v.items.forEach(function (r) {
+          var parentClass = hasVariants ? ("child-of-" + vid) : ("child-of-" + gid);
+          html.push(
+            '<tr class="leaf focusable ' + parentClass + '" data-node-id="' + esc(r.nodeId) + '" ' +
+            'title="Click to focus on canvas" style="display:none">' +
+            '<td style="padding-left:' + (hasVariants ? 44 : 24) + 'px">' +
+            (r.visible ? "" : '<span class="hiddenmark" title="hidden">◌</span> ') +
+            (r.isMaster ? '<span class="chip master">master</span> ' : '') +
+            esc(r.path.split(" / ").slice(-1)[0] || r.componentName) + '</td>' +
+            '<td></td><td></td>' +
+            '<td>' + esc(r.page) + '</td></tr>'
+          );
+        });
+      });
+    });
+    t.innerHTML = html.join("");
+  }
+
+  // TREE VIEW: real nesting. Top-level instances are roots; children linked by
+  // parentInstanceId. Reuses the grp/child-of- expand mechanism.
+  function renderTree(res) {
+    renderHead();
+    var t = el("instTable").querySelector("tbody");
+
+    // Build the pool honoring filters EXCEPT the nested toggle (the tree IS nesting).
+    var q = searchQuery.toLowerCase();
+    var pool = res.instances.filter(function (r) {
+      if (!showHidden && !r.visible) return false;
+      if (originFilterVal && r.origin !== originFilterVal) return false;
+      if (!libMatches(r)) return false;
+      return true; // search handled at root level below
+    });
+
+    // Index children by parent id.
+    var childrenOf = {};
+    var byId = {};
+    pool.forEach(function (r) { byId[r.nodeId] = r; });
+    pool.forEach(function (r) {
+      var p = r.parentInstanceId;
+      // If the parent isn't in the pool (e.g. filtered out), treat as root.
+      var pkey = (p && byId[p]) ? p : "__root__";
+      (childrenOf[pkey] = childrenOf[pkey] || []).push(r);
+    });
+
+    var roots = (childrenOf["__root__"] || []).slice();
+    // Search filters roots by component name (keeps their subtree).
+    if (q) roots = roots.filter(function (r) { return r.componentName.toLowerCase().indexOf(q) !== -1; });
+    roots.sort(function (a, b) {
+      var an = a.componentName.toLowerCase(), bn = b.componentName.toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;
+    });
+
+    if (!roots.length) { t.innerHTML = '<tr><td class="empty">No instances found.</td></tr>'; return; }
+
+    var html = [];
+    var uid = 0;
+    function emit(r, depth, parentDomId) {
+      var kids = childrenOf[r.nodeId] || [];
+      var hasKids = kids.length > 0;
+      var myId = "tn" + (uid++);
+      var pad = 8 + depth * 18;
+      var tw = hasKids
+        ? '<span class="tw">▶</span> '
+        : '<span class="tw" style="visibility:hidden">▶</span> ';
+      var cls = "leaf focusable" + (hasKids ? " grp" : "") + (parentDomId ? (" child-of-" + parentDomId) : "");
+      var toggle = hasKids ? (' data-toggle="' + myId + '"') : "";
+      var hidden = parentDomId ? ' style="display:none"' : "";
+      html.push(
+        '<tr class="' + cls + '"' + toggle + ' data-node-id="' + esc(r.nodeId) + '" title="Click to focus on canvas"' + hidden + '>' +
+        '<td style="padding-left:' + pad + 'px">' + tw +
+        (r.isMaster ? '<span class="chip master">master</span> ' : '') +
+        (r.visible ? "" : '<span class="hiddenmark" title="hidden">◌</span> ') +
+        '<b>' + esc(r.componentName) + '</b>' +
+        (r.variant ? ' <span class="flag" style="font-weight:400">· ' + esc(r.variant) + '</span>' : '') +
+        (hasKids ? ' <span class="flag">(' + kids.length + ')</span>' : '') + '</td>' +
+        '<td>' + sourceHtml({ origin: r.origin, library: r.libraryName }) + '</td>' +
+        '<td></td>' +
+        '<td>' + esc(r.page) + '</td></tr>'
+      );
+      kids.sort(function (a, b) {
+        var an = a.componentName.toLowerCase(), bn = b.componentName.toLowerCase();
+        return an < bn ? -1 : an > bn ? 1 : 0;
+      });
+      kids.forEach(function (k) { emit(k, depth + 1, myId); });
+    }
+    roots.forEach(function (r) { emit(r, 0, null); });
+    t.innerHTML = html.join("");
+  }
+
+  // Dispatcher: choose flat vs tree.
+  function renderList(res) {
+    if (viewMode === "tree") renderTree(res);
+    else renderInstances(visibleInstances(res));
+  }
+
+  // Expand/collapse for grouped tree (delegated).
+  function wireTree() {
+    el("instTable").addEventListener("click", function (ev) {
+      var tr = ev.target.closest ? ev.target.closest("tr.grp, tr.var") : null;
+      if (!tr) return;
+      var id = tr.getAttribute("data-toggle");
+      if (!id) return;
+      var tw = tr.querySelector(".tw");
+      var expanded = tr.classList.toggle("open");
+      if (tw) tw.textContent = expanded ? "▼" : "▶";
+      // Toggle only direct children. Collapsing also hides deeper descendants.
+      var children = el("instTable").querySelectorAll("tr.child-of-" + id);
+      children.forEach(function (c) {
+        if (expanded) {
+          c.style.display = "";
+        } else {
+          c.style.display = "none";
+          // collapse any open descendant too
+          if (c.classList.contains("open")) {
+            c.classList.remove("open");
+            var t2 = c.querySelector(".tw"); if (t2) t2.textContent = "▶";
+            var cid = c.getAttribute("data-toggle");
+            if (cid) el("instTable").querySelectorAll("tr.child-of-" + cid).forEach(function (d) { d.style.display = "none"; });
+          }
+        }
+      });
+    });
+  }
+  wireTree();
+
+  // Filters/toggles → re-render from lastResult.
+  function rerender() {
+    if (!lastResult) return;
+    summarize(lastResult);
+    renderList(lastResult);
+    updateFilterCount(lastResult);
+  }
+  // Toggles change the scope → repopulate the library dropdown too.
+  function rerenderScope() {
+    if (!lastResult) return;
+    populateLibFilter(lastResult);
+    rerender();
+  }
+  el("showHidden").addEventListener("change", function () { showHidden = el("showHidden").checked; rerenderScope(); });
+  el("showNested").addEventListener("change", function () { showNested = el("showNested").checked; rerenderScope(); });
+  el("originFilter").addEventListener("change", function () { originFilterVal = el("originFilter").value; rerender(); });
+
+  // Library multi-select: button toggles the checkbox menu; outside-click closes.
+  el("libFilterBtn").onclick = function (ev) {
+    ev.stopPropagation();
+    var m = el("libFilterMenu");
+    m.style.display = m.style.display === "none" ? "block" : "none";
+  };
+  document.addEventListener("click", function (ev) {
+    if (!el("libFilterWrap").contains(ev.target)) el("libFilterMenu").style.display = "none";
+  });
+  function updateLibBtnLabel() {
+    var n = libFilterVals.length;
+    el("libFilterBtn").textContent =
+      n === 0 ? "All libraries" : n === 1 ? libFilterVals[0] : n + " libraries";
+    el("libFilterBtn").title = n > 1 ? libFilterVals.join(", ") : "Filter by library";
+  }
+  el("viewMode").addEventListener("change", function () {
+    viewMode = el("viewMode").value;
+    // Nested toggle is irrelevant in tree mode (the tree itself is the nesting).
+    el("showNested").disabled = (viewMode === "tree");
+    rerender();
+  });
+  var searchTimer = null;
+  el("search").addEventListener("input", function () {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () { searchQuery = el("search").value.trim(); rerender(); }, 150);
+  });
+
+  function renderDetach(rows) {
+    var t = el("detachTable").querySelector("tbody");
+    if (!rows.length) { t.innerHTML = '<tr><td class="empty">No name-matched detached layers.</td></tr>'; return; }
+    var head = '<tr><th>Layer</th><th>Matched component</th><th>Page</th><th>Path</th></tr>';
+    var body = rows.map(function (r) {
+      return '<tr class="focusable" data-node-id="' + esc(r.nodeId) + '" title="Click to focus on canvas"><td>' + esc(r.layerName) + '</td><td>' + esc(r.matchedComponentName) + '</td><td>' + esc(r.page) + '</td><td class="path" title="' + esc(r.path) + '">' + esc(r.path) + '</td></tr>';
+    }).join("");
+    t.innerHTML = head + body;
+  }
+
+  // Instances honoring all filters: hidden/nested toggles, search, origin, library.
+  // Default audit view: visible + top-level only.
+  function visibleInstances(res) {
+    var q = searchQuery.toLowerCase();
+    return res.instances.filter(function (r) {
+      if (!showHidden && !r.visible) return false;
+      if (!showNested && r.nestedInsideInstance) return false;
+      if (originFilterVal && r.origin !== originFilterVal) return false;
+      if (!libMatches(r)) return false;
+      if (q && r.componentName.toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    });
+  }
+
+  // The full audit scope (hidden/nested toggles only) — used to populate the
+  // library dropdown and the "X of Y" count, independent of search/origin/lib.
+  function scopedInstances(res) {
+    return res.instances.filter(function (r) {
+      if (!showHidden && !r.visible) return false;
+      if (!showNested && r.nestedInsideInstance) return false;
+      return true;
+    });
+  }
+
+  function populateLibFilter(res) {
+    var names = {};
+    scopedInstances(res).forEach(function (r) {
+      if (r.origin === "library" && r.libraryName) names[r.libraryName] = 1;
+    });
+    var list = Object.keys(names).sort();
+    // Drop any selected libraries that left scope (new scan / toggle change),
+    // so the filter never silently hides everything.
+    libFilterVals = libFilterVals.filter(function (n) { return names[n]; });
+
+    var menu = el("libFilterMenu");
+    if (!list.length) {
+      menu.innerHTML = '<div style="padding:6px 8px;color:var(--muted)">No libraries</div>';
+      updateLibBtnLabel();
+      return;
+    }
+    var clear = '<button type="button" class="ms-clear" id="libClear">Clear selection</button>';
+    var rows = list.map(function (n) {
+      var checked = libFilterVals.indexOf(n) !== -1 ? " checked" : "";
+      return '<label><input type="checkbox" value="' + esc(n) + '"' + checked + ' /> ' + esc(n) + '</label>';
+    }).join("");
+    menu.innerHTML = clear + rows;
+
+    menu.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+      cb.addEventListener("change", function () {
+        var name = cb.value;
+        if (cb.checked) { if (libFilterVals.indexOf(name) === -1) libFilterVals.push(name); }
+        else { libFilterVals = libFilterVals.filter(function (x) { return x !== name; }); }
+        updateLibBtnLabel();
+        rerender();
+      });
+    });
+    var cl = el("libClear");
+    if (cl) cl.onclick = function () {
+      libFilterVals = [];
+      menu.querySelectorAll('input[type="checkbox"]').forEach(function (cb) { cb.checked = false; });
+      updateLibBtnLabel();
+      rerender();
+    };
+    updateLibBtnLabel();
+  }
+
+  function updateFilterCount(res) {
+    var shown = visibleInstances(res).length;
+    var total = scopedInstances(res).length;
+    el("filterCount").textContent = shown === total ? (total + " instances") : (shown + " of " + total);
+  }
+
+  function summarize(res) {
+    var inst = visibleInstances(res);
+    var lib = inst.filter(function (r) { return r.origin === "library"; }).length;
+    var loc = inst.filter(function (r) { return r.origin === "local"; }).length;
+    var unk = inst.filter(function (r) { return r.origin === "unknown"; }).length;
+    // Unique components (SET level) and how many distinct libraries they came from.
+    var uniqComp = {}, libNames = {};
+    inst.forEach(function (r) {
+      uniqComp[(r.componentKey || r.componentName)] = 1;
+      if (r.origin === "library" && r.libraryName) libNames[r.libraryName] = 1;
+    });
+    var uniqCount = Object.keys(uniqComp).length;
+    var libCount = Object.keys(libNames).length;
+
+    var scopeNote = [];
+    if (!showNested) scopeNote.push("top-level");
+    if (!showHidden) scopeNote.push("visible");
+    var scopeStr = scopeNote.length ? " (" + scopeNote.join(", ") + " only)" : "";
+    var line1 = '<b>' + uniqCount + '</b> components used across <b>' + inst.length + '</b> instances' + scopeStr + '. ' +
+      'Sources: <b>' + lib + '</b> from ' + libCount + ' DS ' + (libCount === 1 ? 'library' : 'libraries') +
+      ' · <b>' + loc + '</b> local' + (unk ? ' · <b>' + unk + '</b> unresolved' : '') +
+      ' · <b>' + res.detaches.length + '</b> possible detaches' +
+      (res.aborted ? ' · <span style="color:var(--danger)">(cancelled — partial)</span>' : '');
+
+    var line2 = "";
+    if (res.stats && res.stats.timings) {
+      var t = res.stats.timings;
+      var ms = function (v) { return v == null ? "?" : (v < 1000 ? v + "ms" : (v / 1000).toFixed(1) + "s"); };
+      line2 = '<div style="color:var(--muted);margin-top:2px">' +
+        'scanned ' + (res.stats.totalNodes || 0) + ' layers · ' +
+        'walk ' + ms(t.phase1_walk) + ' · libraries ' + ms(t.phase2_libraries) +
+        ' (' + (res.stats.uniqueLibraryMasters || 0) + ' checked) · detach ' + ms(t.phase3_detach) +
+        ' · <b>total ' + ms(t.total) + '</b></div>';
+    }
+    el("summary").innerHTML = line1 + line2;
+  }
+
+  // ---- exports ---- aggregated: one row per component (set), with its library
+  // and total instance count. Respects on-screen filters (matches what you see).
+  function componentRows(res) {
+    var groups = groupInstances(visibleInstances(res));
+    groups.sort(function (a, b) {
+      if (b.count !== a.count) return b.count - a.count;      // most-used first
+      var an = (a.name || "").toLowerCase(), bn = (b.name || "").toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;                  // then A→Z
+    });
+    return groups.map(function (g) {
+      return { Component: g.name, Library: sourceLabel(g), Count: g.count };
+    });
+  }
+
+  function toCSV(rows) {
+    if (!rows.length) return "";
+    var cols = Object.keys(rows[0]);
+    var q = function (v) { v = String(v == null ? "" : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var out = [cols.join(",")];
+    rows.forEach(function (r) { out.push(cols.map(function (c) { return q(r[c]); }).join(",")); });
+    return out.join("\n");
+  }
+
+  function download(name, content, mime) {
+    var blob = content instanceof Blob ? content : new Blob([content], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  }
+
+  // File name carries the project/file name: <project>__component-audit.{csv,xlsx}
+  function safeFile(res) { return (res.fileName || "audit").replace(/[^\w.-]+/g, "_"); }
+
+  // ---- self-contained .xlsx writer (no CDN, no library) ----
+  // A .xlsx is a ZIP of XML parts. We only need one sheet of flat string rows,
+  // so we build minimal OOXML and pack it with a tiny STORE-only ZIP writer.
+  var CRC_TABLE = (function () {
+    var t = [];
+    for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+    return t;
+  })();
+  function crc32(bytes) {
+    var c = 0xFFFFFFFF;
+    for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function utf8(str) {
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(str);
+    var bytes = [], i, ci;
+    for (i = 0; i < str.length; i++) {
+      ci = str.charCodeAt(i);
+      if (ci < 0x80) bytes.push(ci);
+      else if (ci < 0x800) bytes.push(0xC0 | (ci >> 6), 0x80 | (ci & 0x3F));
+      else bytes.push(0xE0 | (ci >> 12), 0x80 | ((ci >> 6) & 0x3F), 0x80 | (ci & 0x3F));
+    }
+    return new Uint8Array(bytes);
+  }
+  function zipStore(files) {
+    // files: [{ name, data(Uint8Array) }] → Blob (STORE, no compression)
+    var chunks = [], central = [], offset = 0;
+    var pushU16 = function (a, v) { a.push(v & 0xFF, (v >>> 8) & 0xFF); };
+    var pushU32 = function (a, v) { a.push(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF); };
+    files.forEach(function (f) {
+      var nameBytes = utf8(f.name), crc = crc32(f.data), local = [];
+      pushU32(local, 0x04034b50); pushU16(local, 20); pushU16(local, 0); pushU16(local, 0);
+      pushU16(local, 0); pushU16(local, 0x21); pushU32(local, crc);
+      pushU32(local, f.data.length); pushU32(local, f.data.length);
+      pushU16(local, nameBytes.length); pushU16(local, 0);
+      var header = new Uint8Array(local);
+      chunks.push(header, nameBytes, f.data);
+      pushU32(central, 0x02014b50); pushU16(central, 20); pushU16(central, 20); pushU16(central, 0);
+      pushU16(central, 0); pushU16(central, 0); pushU16(central, 0x21); pushU32(central, crc);
+      pushU32(central, f.data.length); pushU32(central, f.data.length);
+      pushU16(central, nameBytes.length); pushU16(central, 0); pushU16(central, 0);
+      pushU16(central, 0); pushU16(central, 0); pushU32(central, 0); pushU32(central, offset);
+      for (var i = 0; i < nameBytes.length; i++) central.push(nameBytes[i]);
+      offset += header.length + nameBytes.length + f.data.length;
+    });
+    var centralBytes = new Uint8Array(central), end = [];
+    pushU32(end, 0x06054b50); pushU16(end, 0); pushU16(end, 0);
+    pushU16(end, files.length); pushU16(end, files.length);
+    pushU32(end, centralBytes.length); pushU32(end, offset); pushU16(end, 0);
+    chunks.push(centralBytes, new Uint8Array(end));
+    return new Blob(chunks, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  }
+  function xmlEsc(v) {
+    return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  }
+  function colName(i) {
+    var s = ""; i++;
+    while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); }
+    return s;
+  }
+  function sheetXml(rows) {
+    var cols = rows.length ? Object.keys(rows[0]) : [];
+    var cell = function (r, c, val) {
+      return '<c r="' + colName(c) + r + '" t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(val) + '</t></is></c>';
+    };
+    var lines = ['<row r="1">' + cols.map(function (c, ci) { return cell(1, ci, c); }).join("") + '</row>'];
+    rows.forEach(function (row, ri) {
+      var r = ri + 2;
+      lines.push('<row r="' + r + '">' + cols.map(function (c, ci) { return cell(r, ci, row[c]); }).join("") + '</row>');
+    });
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      '<sheetData>' + lines.join("") + '</sheetData></worksheet>';
+  }
+  function buildXlsx(rows) {
+    var parts = [
+      { name: "[Content_Types].xml", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '</Types>' },
+      { name: "_rels/.rels", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+        '</Relationships>' },
+      { name: "xl/workbook.xml", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+        '<sheets><sheet name="Components" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+      { name: "xl/_rels/workbook.xml.rels", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+        '</Relationships>' },
+      { name: "xl/worksheets/sheet1.xml", xml: sheetXml(rows) }
+    ];
+    return zipStore(parts.map(function (p) { return { name: p.name, data: utf8(p.xml) }; }));
+  }
+
+  el("csvBtn").onclick = function () {
+    if (!lastResult) return;
+    download(safeFile(lastResult) + "__component-audit.csv", toCSV(componentRows(lastResult)), "text/csv");
+  };
+
+  el("xlsxBtn").onclick = function () {
+    if (!lastResult) return;
+    download(safeFile(lastResult) + "__component-audit.xlsx", buildXlsx(componentRows(lastResult)));
+  };
+
+  // ---- messages from sandbox ----
+  window.onmessage = function (event) {
+    var msg = event.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === "progress") {
+      el("progPhase").textContent = msg.phase;
+      renderCounters(msg.counters);
+      // Only show the free-text detail line when there are no structured counters.
+      el("progText").textContent = (msg.counters && msg.counters.length) ? "" : (msg.detail || "");
+    } else if (msg.type === "warn") {
+      el("progText").textContent = "⚠ " + msg.message;
+    } else if (msg.type === "focusResult") {
+      if (!msg.ok) {
+        var sel = el("instTable").querySelector("tr.selected") || el("detachTable").querySelector("tr.selected");
+        if (sel) { sel.classList.add("notfound"); setTimeout(function(){ sel.classList.remove("notfound"); }, 1500); }
+      }
+    } else if (msg.type === "error") {
+      setScanning(false);
+      el("summary").innerHTML = '<span style="color:var(--danger)">Error: ' + esc(msg.message) + '</span>';
+    } else if (msg.type === "result") {
+      setScanning(false);
+      lastResult = msg;
+      el("fileName").textContent = (msg.buildId ? "[" + msg.buildId + "] " : "[OLD BUILD] ") + (msg.fileName || "");
+      populateLibFilter(msg);
+      summarize(msg);
+      renderList(msg);
+      updateFilterCount(msg);
+      renderDetach(msg.detaches);
+      var has = msg.instances.length > 0 || msg.detaches.length > 0;
+      el("csvBtn").disabled = !has;
+      el("xlsxBtn").disabled = !has;
+    }
+  };
+</script>
+</body>
+</html>
