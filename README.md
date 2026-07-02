@@ -28,14 +28,33 @@ known component. Name-based only — expect false positives. Never mixed into or
 - **Origin detection** relies on `mainComponent.remote` + `getLibraryInfoAsync()`. Verified in
   Figma; **verify the exact shape on first Pixso run** (the plugin captures fields defensively).
 
+## UI stack
+
+The plugin UI is a **React + TypeScript** app styled with **Tailwind CSS v4** and
+**shadcn/ui** components, with **Hugeicons** (`@hugeicons/react` + free icon set) for icons.
+Vite bundles it into a single self-contained `dist/ui.html` (via `vite-plugin-singlefile`)
+because Pixso loads the plugin UI as one raw HTML file in an iframe — no external files,
+no CDN. XLSX export uses **ExcelJS** (the abandoned `xlsx`/SheetJS npm package was dropped
+for its known vulnerabilities).
+
+The sandbox (`src/main.ts`) is unchanged and still compiles with `tsc` → `dist/main.js`.
+UI↔sandbox message-passing keeps the original `postMessage` protocol.
+
 ## Build
 
 ```bash
 npm install
-npm run build   # → dist/main.js
+npm run build          # sandbox (tsc → dist/main.js) + UI (vite → dist/ui.html)
+
+# or individually:
+npm run build:sandbox  # tsc → dist/main.js
+npm run build:ui       # vite → dist/ui.html
+npm run watch:ui       # vite --watch during UI development
 ```
 
 Load in Pixso: Plugins → Development → Import from manifest → `manifest.json`.
+
+`dist/` is git-ignored — run `npm install && npm run build` after cloning before importing.
 
 ## Status
 
