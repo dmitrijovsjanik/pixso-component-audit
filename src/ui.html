@@ -120,19 +120,17 @@
   tr.focusable.notfound td { background: #fee2e2; }
   tr.grp { cursor: pointer; background: #fafafa; }
   tr.grp:hover td { background: #f1f5f9; }
-  /* Sticky offsets. Fixed row heights make the offsets exact so there is no gap
-     between the pinned rows and the table head. --rowh must match the real row
-     height (padding 5px top+bottom + 1px border + ~15px line = 26px). */
-  :root { --rowh: 26px; }
-  thead th { height: var(--rowh); box-sizing: border-box; }
+  /* Sticky offsets are measured at runtime (--thead-h / --grp-h) so they match
+     the real rendered heights exactly — no guesswork, no gap. */
+  :root { --thead-h: 27px; --grp-h: 26px; }
   /* When a top-level group is expanded, pin its header row right under the table
      head so you always see which component you're looking at. */
   tr.grp.open.sticky-grp td {
-    position: sticky; top: var(--rowh); z-index: 3; background: #eef2f7;
+    position: sticky; top: var(--thead-h); z-index: 3; background: #eef2f7;
   }
   /* An expanded variant row inside a pinned group pins just below it. */
   tr.var.open.sticky-var td {
-    position: sticky; top: calc(var(--rowh) * 2); z-index: 2; background: #f1f5f9;
+    position: sticky; top: calc(var(--thead-h) + var(--grp-h)); z-index: 2; background: #f1f5f9;
   }
   tr.var { cursor: pointer; }
   tr.var:hover td { background: #f8fafc; }
@@ -161,6 +159,8 @@
   /* empty-state cell: centered, no border line, fills the table area */
   td.empty { text-align: center; color: var(--muted); border-bottom: none; padding: 40px 24px; }
   tr:has(> td.empty):hover td { background: transparent; }
+  /* full-area centered prompt (before the first scan / no data) */
+  .bigempty { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); }
   .note { padding: 6px 14px; color: var(--muted); font-style: italic; }
   .filterbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; flex-wrap: wrap; }
   .filterbar input[type="text"] {
@@ -240,6 +240,11 @@
       <button data-tab="instances" class="active">Instances</button>
       <button data-tab="detach">Detach (heuristic)</button>
       <button data-tab="debug">Debug</button>
+    </div>
+
+    <!-- shown in Audit mode before the first scan: just a centered prompt -->
+    <div id="auditEmpty" class="bigempty" style="display:none">
+      No scan yet. Click “Start scan”.
     </div>
 
   <div id="instancesView">
@@ -382,27 +387,29 @@
   function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
 
   var scanningNow = false;
-  var currentMode = "";          // "" (nothing yet) | "audit" | "merge"
+  var currentMode = "audit";     // "audit" | "merge" — Audit is the default
   var currentTab = "instances";  // audit sub-tab
+  var hasResult = false;         // a scan has completed → show tabs + table
 
-  // Top-level layout: which mode is shown, and within audit which sub-tab.
-  // At start currentMode === "" so both modes are hidden — only the two mode
-  // buttons in the header are visible.
+  // Top-level layout: which mode is shown, and within Audit which sub-tab.
+  // Before the first scan (or during one) Audit shows only a centered prompt —
+  // no tabs, no empty table.
   function applyViews() {
     var audit = currentMode === "audit";
     var merge = currentMode === "merge";
     el("auditMode").style.display = audit ? "flex" : "none";
     el("mergeMode").style.display = merge ? "flex" : "none";
-    // mode buttons active state
     el("modeAudit").classList.toggle("active", audit);
     el("modeMerge").classList.toggle("active", merge);
 
-    // audit sub-tabs (hidden during a scan)
-    var vis = (audit && !scanningNow) ? currentTab : "";
+    // Audit results appear only after a scan and never during one.
+    var ready = audit && hasResult && !scanningNow;
+    el("auditEmpty").style.display = (audit && !hasResult && !scanningNow) ? "flex" : "none";
+    el("tabs").style.display = ready ? "flex" : "none";
+    var vis = ready ? currentTab : "";
     el("instancesView").style.display = (vis === "instances") ? "flex" : "none";
     el("detachView").style.display = (vis === "detach") ? "flex" : "none";
     el("debugView").style.display = (vis === "debug") ? "flex" : "none";
-    el("tabs").style.display = (audit && !scanningNow) ? "flex" : "none";
     if (vis === "debug") el("debugText").value = buildDebug();
   }
 
@@ -863,6 +870,21 @@
   function renderList(res) {
     if (viewMode === "tree") renderTree(res);
     else { renderInstances(visibleInstances(res)); wireThumbs(); }
+    measureSticky();
+  }
+
+  // Measure the real header + group-row heights so the sticky offsets line up
+  // exactly (no gap between the pinned rows and the table head).
+  function measureSticky() {
+    var th = el("instTable").querySelector("thead th");
+    var grp = el("instTable").querySelector("tr.grp");
+    var root = document.documentElement;
+    // Floor + a hair less so pinned rows slightly overlap rather than leave a
+    // sub-pixel gap under the head.
+    var thH = th ? th.getBoundingClientRect().height : 0;
+    var grpH = grp ? grp.getBoundingClientRect().height : 0;
+    if (thH > 0) root.style.setProperty("--thead-h", (Math.floor(thH) - 1) + "px");
+    if (grpH > 0) root.style.setProperty("--grp-h", (Math.floor(grpH) - 1) + "px");
   }
 
   // Expand/collapse for grouped tree (delegated).
@@ -891,6 +913,7 @@
           }
         }
       });
+      measureSticky(); // heights may have changed
     });
   }
   wireTree();
@@ -1533,6 +1556,7 @@
       el("summaryInline").innerHTML = '<span style="color:var(--danger)">Error: ' + esc(msg.message) + '</span>';
     } else if (msg.type === "result") {
       lastResult = msg;
+      hasResult = true;
       setScanning(false);
       el("fileName").textContent = msg.fileName || "";
       populateLibFilter(msg);
