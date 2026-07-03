@@ -11,10 +11,20 @@
     --chip-unknown: #fef2f2; --chip-unknown-fg: #b91c1c;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     color: var(--fg); background: var(--bg);
+    display: flex; flex-direction: column; overflow: hidden;
   }
+  /* the active results view fills the remaining height */
+  #instancesView, #detachView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #debugView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .summary-inline {
+    font-size: 11px; color: var(--muted); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; margin-left: 12px;
+  }
+  .summary-inline b { color: var(--fg); font-variant-numeric: tabular-nums; }
   /* window resize handles (edges + corner) */
   .rz { position: fixed; z-index: 1000; }
   .rz-r  { top: 0; right: 0; width: 6px; height: 100%; cursor: ew-resize; }
@@ -54,7 +64,7 @@
   .tabs { display: flex; gap: 4px; padding: 8px 14px 0; }
   .tabs button { border-radius: 6px 6px 0 0; }
   .tabs button.active { background: var(--bg); border-bottom-color: var(--bg); font-weight: 600; }
-  .tablewrap { overflow: auto; max-height: 340px; margin: 0 14px 10px; border: 1px solid var(--border); border-radius: 6px; }
+  .tablewrap { overflow: auto; flex: 1; min-height: 0; margin: 0 14px 10px; border: 1px solid var(--border); border-radius: 6px; }
   table { border-collapse: collapse; width: 100%; font-size: 11px; table-layout: fixed; }
   th, td {
     text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border);
@@ -78,12 +88,19 @@
   tr.focusable.notfound td { background: #fee2e2; }
   tr.grp { cursor: pointer; background: #fafafa; }
   tr.grp:hover td { background: #f1f5f9; }
-  /* When a top-level group is expanded, keep its header row pinned below the
-     table head while you scroll through its children, so you always see which
-     component you're looking at. */
+  /* Sticky offsets. Fixed row heights make the offsets exact so there is no gap
+     between the pinned rows and the table head. --rowh must match the real row
+     height (padding 5px top+bottom + 1px border + ~15px line = 26px). */
+  :root { --rowh: 26px; }
+  thead th { height: var(--rowh); box-sizing: border-box; }
+  /* When a top-level group is expanded, pin its header row right under the table
+     head so you always see which component you're looking at. */
   tr.grp.open.sticky-grp td {
-    position: sticky; top: 27px; z-index: 2; background: #eef2f7;
-    box-shadow: 0 1px 0 var(--border);
+    position: sticky; top: var(--rowh); z-index: 3; background: #eef2f7;
+  }
+  /* An expanded variant row inside a pinned group pins just below it. */
+  tr.var.open.sticky-var td {
+    position: sticky; top: calc(var(--rowh) * 2); z-index: 2; background: #f1f5f9;
   }
   tr.var { cursor: pointer; }
   tr.var:hover td { background: #f8fafc; }
@@ -164,6 +181,7 @@
 
   <div class="toolbar">
     <button id="scanBtn" class="primary">Scan file</button>
+    <div id="summaryInline" class="summary-inline"></div>
     <div class="spacer" style="flex:1"></div>
     <button id="csvBtn" disabled>Export CSV</button>
     <button id="xlsxBtn" disabled>Export XLSX</button>
@@ -178,9 +196,7 @@
     <div id="progCounters" class="progcounters"></div>
   </div>
 
-  <div class="summary" id="summary"></div>
-
-  <div class="tabs" style="align-items:center">
+  <div class="tabs" id="tabs" style="align-items:center; display:none">
     <button data-tab="instances" class="active">Instances</button>
     <button data-tab="detach">Detach (heuristic)</button>
     <button data-tab="debug">Debug</button>
@@ -304,21 +320,27 @@
 
   var scanningNow = false;
   var currentTab = "instances";
-  // Show exactly one of the three views (unless a scan is running → show none).
+  // Show exactly one of the three views. Nothing shows during a scan or before
+  // the first result. Uses display:flex to match the CSS (block would break the
+  // full-height flex layout).
   function applyViews() {
-    el("instancesView").style.display = (!scanningNow && currentTab === "instances") ? "block" : "none";
-    el("detachView").style.display = (!scanningNow && currentTab === "detach") ? "block" : "none";
-    el("debugView").style.display = (!scanningNow && currentTab === "debug") ? "block" : "none";
-    if (!scanningNow && currentTab === "debug") el("debugText").value = buildDebug();
+    var ready = !scanningNow && hasResult;
+    el("instancesView").style.display = (ready && currentTab === "instances") ? "flex" : "none";
+    el("detachView").style.display = (ready && currentTab === "detach") ? "flex" : "none";
+    el("debugView").style.display = (ready && currentTab === "debug") ? "flex" : "none";
+    if (ready && currentTab === "debug") el("debugText").value = buildDebug();
   }
 
+  var hasResult = false; // a scan has completed at least once → show tabs
   function setScanning(on) {
     scanningNow = on;
     el("scanBtn").disabled = on;
     el("progWrap").style.display = on ? "block" : "none";
-    el("summary").style.display = on ? "none" : "block";
+    // Tabs appear only once there's something to show, and are hidden mid-scan.
+    el("tabs").style.display = (!on && hasResult) ? "flex" : "none";
     applyViews(); // hide results while scanning; restore the active tab after
     if (on) {
+      el("summaryInline").innerHTML = "";
       // New scan → previews from the previous file are stale.
       thumbCache = {}; thumbRequested = {};
       el("progPhase").textContent = "Starting…";
@@ -662,7 +684,7 @@
         var vid = gid + "v" + vi;
         if (hasVariants) {
           html.push(
-            '<tr class="var child-of-' + gid + '" data-toggle="' + vid + '" style="display:none">' +
+            '<tr class="var sticky-var child-of-' + gid + '" data-toggle="' + vid + '" style="display:none">' +
             '<td style="padding-left:24px"><span class="tw">▶</span> ' + esc(v.name) + '</td>' +
             '<td></td><td>' + v.count + '</td><td></td></tr>'
           );
@@ -790,6 +812,7 @@
     });
   }
   wireTree();
+  applyViews(); // start clean: no views until the first scan completes
 
   // Filters/toggles → re-render from lastResult.
   function rerender() {
@@ -999,41 +1022,23 @@
     el("filterCount").textContent = shown === total ? (total + " instances") : (shown + " of " + total);
   }
 
+  // Compact one-line summary next to the Scan button — the same counters shown
+  // during the scan, with their final values. No prose, no timings, so nothing
+  // shifts layout.
   function summarize(res) {
-    var inst = visibleInstances(res);
-    var lib = inst.filter(function (r) { return r.origin === "library"; }).length;
-    var loc = inst.filter(function (r) { return r.origin === "local"; }).length;
-    var unk = inst.filter(function (r) { return r.origin === "unknown"; }).length;
-    // Unique components (SET level) and how many distinct libraries they came from.
-    var uniqComp = {}, libNames = {};
-    inst.forEach(function (r) {
-      uniqComp[(r.componentKey || r.componentName)] = 1;
+    var libNames = {};
+    (res.instances || []).forEach(function (r) {
       if (r.origin === "library" && r.libraryName) libNames[r.libraryName] = 1;
     });
-    var uniqCount = Object.keys(uniqComp).length;
-    var libCount = Object.keys(libNames).length;
-
-    var scopeNote = [];
-    if (!showNested) scopeNote.push("top-level");
-    if (!showHidden) scopeNote.push("visible");
-    var scopeStr = scopeNote.length ? " (" + scopeNote.join(", ") + " only)" : "";
-    var line1 = '<b>' + uniqCount + '</b> components used across <b>' + inst.length + '</b> instances' + scopeStr + '. ' +
-      'Sources: <b>' + lib + '</b> from ' + libCount + ' DS ' + (libCount === 1 ? 'library' : 'libraries') +
-      ' · <b>' + loc + '</b> local' + (unk ? ' · <b>' + unk + '</b> unresolved' : '') +
-      ' · <b>' + res.detaches.length + '</b> possible detaches' +
-      (res.aborted ? ' · <span style="color:var(--danger)">(cancelled — partial)</span>' : '');
-
-    var line2 = "";
-    if (res.stats && res.stats.timings) {
-      var t = res.stats.timings;
-      var ms = function (v) { return v == null ? "?" : (v < 1000 ? v + "ms" : (v / 1000).toFixed(1) + "s"); };
-      line2 = '<div style="color:var(--muted);margin-top:2px">' +
-        'scanned ' + (res.stats.totalNodes || 0) + ' layers · ' +
-        'walk ' + ms(t.phase1_walk) + ' · libraries ' + ms(t.phase2_libraries) +
-        ' (' + (res.stats.uniqueLibraryMasters || 0) + ' checked) · detach ' + ms(t.phase3_detach) +
-        ' · <b>total ' + ms(t.total) + '</b></div>';
-    }
-    el("summary").innerHTML = line1 + line2;
+    var layers = (res.stats && res.stats.totalNodes) || 0;
+    var parts = [
+      'Layers <b>' + fmtNum(layers) + '</b>',
+      'Instances <b>' + fmtNum((res.instances || []).length) + '</b>',
+      'Libraries <b>' + fmtNum(Object.keys(libNames).length) + '</b>',
+      'Detaches <b>' + fmtNum((res.detaches || []).length) + '</b>'
+    ];
+    if (res.aborted) parts.push('<span style="color:var(--danger)">(partial)</span>');
+    el("summaryInline").innerHTML = parts.join(" · ");
   }
 
   // ---- exports ---- aggregated: one row per component (set), with its source
@@ -1259,10 +1264,11 @@
       }
     } else if (msg.type === "error") {
       setScanning(false);
-      el("summary").innerHTML = '<span style="color:var(--danger)">Error: ' + esc(msg.message) + '</span>';
+      el("summaryInline").innerHTML = '<span style="color:var(--danger)">Error: ' + esc(msg.message) + '</span>';
     } else if (msg.type === "result") {
-      setScanning(false);
       lastResult = msg;
+      hasResult = true;
+      setScanning(false); // reveals the tabs now that hasResult is set
       el("fileName").textContent = msg.fileName || "";
       populateLibFilter(msg);
       summarize(msg);
