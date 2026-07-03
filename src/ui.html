@@ -196,7 +196,21 @@
   </div>
   <div id="detachView" style="display:none">
     <div class="note">Name-based match only — a layer that is NOT an instance but whose name matches a known component. May include false positives.</div>
-    <div class="tablewrap"><table id="detachTable"><tbody><tr><td class="empty">—</td></tr></tbody></table></div>
+    <div class="filterbar">
+      <input type="text" id="detachSearch" placeholder="Search component name…" />
+      <label class="toggle-inline"><input type="checkbox" id="detachShowHidden" /> Hidden</label>
+      <span class="filtercount" id="detachCount"></span>
+    </div>
+    <div class="tablewrap"><table id="detachTable">
+      <colgroup>
+        <col style="width:40%" />
+        <col style="width:12%" />
+        <col style="width:22%" />
+        <col style="width:26%" />
+      </colgroup>
+      <thead></thead>
+      <tbody><tr><td class="empty">—</td></tr></tbody>
+    </table></div>
   </div>
 
   <div id="debugView" style="display:none; padding:8px 14px 10px">
@@ -210,6 +224,8 @@
   var showHidden = false;
   var showNested = false;
   var searchQuery = "";
+  var detachShowHidden = false;   // Detach tab: show hidden layers too
+  var detachSearch = "";          // Detach tab: search by matched component
   var libFilterVals = [];  // selected sources (lib name / local / unresolved); empty = all
   var sortKey = "count";   // default: most-used first
   var sortDir = -1;        // -1 desc, 1 asc
@@ -736,15 +752,92 @@
     searchTimer = setTimeout(function () { searchQuery = el("search").value.trim(); rerender(); }, 150);
   });
 
-  function renderDetach(rows) {
-    var t = el("detachTable").querySelector("tbody");
-    if (!rows.length) { t.innerHTML = '<tr><td class="empty">No name-matched detached layers.</td></tr>'; return; }
-    var head = '<tr><th>Layer</th><th>Matched component</th><th>Page</th><th>Path</th></tr>';
-    var body = rows.map(function (r) {
-      return '<tr class="focusable" data-node-id="' + esc(r.nodeId) + '" title="Click to focus on canvas"><td>' + esc(r.layerName) + '</td><td>' + esc(r.matchedComponentName) + '</td><td>' + esc(r.page) + '</td><td class="path" title="' + esc(r.path) + '">' + esc(r.path) + '</td></tr>';
-    }).join("");
-    t.innerHTML = head + body;
+  // Detach honoring the tab's own filters (hidden toggle + search).
+  function detachFiltered(res) {
+    var q = detachSearch.toLowerCase();
+    return (res.detaches || []).filter(function (r) {
+      if (!detachShowHidden && r.visible === false) return false;
+      if (q && (r.matchedComponentName || "").toLowerCase().indexOf(q) === -1) return false;
+      return true;
+    });
   }
+
+  function updateDetachCount(res) {
+    var shown = detachFiltered(res).length;
+    var all = (res.detaches || []).length;
+    el("detachCount").textContent = shown === all ? (all + " layers") : (shown + " of " + all);
+  }
+
+  function renderDetach(res) {
+    var rows = detachFiltered(res);
+    var thead = el("detachTable").querySelector("thead");
+    var tbody = el("detachTable").querySelector("tbody");
+    thead.innerHTML = '<tr><th>Matched component / layer</th><th>Count</th><th>Page</th><th>Path</th></tr>';
+    if (!rows.length) { tbody.innerHTML = '<tr><td class="empty" colspan="4">No name-matched detached layers.</td></tr>'; return; }
+
+    // Group by the matched component name.
+    var byComp = {}, order = [];
+    rows.forEach(function (r) {
+      var k = r.matchedComponentName || "(unnamed)";
+      if (!byComp[k]) { byComp[k] = []; order.push(k); }
+      byComp[k].push(r);
+    });
+    order.sort(function (a, b) {
+      var d = byComp[b].length - byComp[a].length;   // most matches first
+      if (d) return d;
+      return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
+    });
+
+    var html = [];
+    order.forEach(function (name, gi) {
+      var items = byComp[name];
+      var gid = "dg" + gi;
+      html.push(
+        '<tr class="grp" data-toggle="' + gid + '">' +
+        '<td><span class="tw">▶</span> <b>' + esc(name) + '</b></td>' +
+        '<td><b>' + items.length + '</b></td><td></td><td></td></tr>'
+      );
+      items.forEach(function (r) {
+        html.push(
+          '<tr class="leaf focusable child-of-' + gid + '" data-node-id="' + esc(r.nodeId) + '" ' +
+          'title="Click to focus on canvas" style="display:none">' +
+          '<td style="padding-left:24px">' +
+          (r.visible === false ? '<span class="hiddenmark" title="hidden">◌</span> ' : '') +
+          esc(r.layerName) + '</td>' +
+          '<td></td>' +
+          '<td>' + esc(r.page) + '</td>' +
+          '<td class="path" title="' + esc(r.path) + '">' + esc(r.path) + '</td></tr>'
+        );
+      });
+    });
+    tbody.innerHTML = html.join("");
+  }
+
+  // Expand/collapse for the detach groups (single level).
+  el("detachTable").addEventListener("click", function (ev) {
+    var tr = ev.target.closest ? ev.target.closest("tr.grp") : null;
+    if (!tr) return;
+    var id = tr.getAttribute("data-toggle");
+    if (!id) return;
+    var tw = tr.querySelector(".tw");
+    var expanded = tr.classList.toggle("open");
+    if (tw) tw.textContent = expanded ? "▼" : "▶";
+    el("detachTable").querySelectorAll("tr.child-of-" + id).forEach(function (c) {
+      c.style.display = expanded ? "" : "none";
+    });
+  });
+
+  function rerenderDetach() {
+    if (!lastResult) return;
+    renderDetach(lastResult);
+    updateDetachCount(lastResult);
+  }
+  el("detachShowHidden").addEventListener("change", function () { detachShowHidden = el("detachShowHidden").checked; rerenderDetach(); });
+  var detachSearchTimer = null;
+  el("detachSearch").addEventListener("input", function () {
+    if (detachSearchTimer) clearTimeout(detachSearchTimer);
+    detachSearchTimer = setTimeout(function () { detachSearch = el("detachSearch").value.trim(); rerenderDetach(); }, 150);
+  });
 
   // Instances honoring all filters: hidden/nested toggles, search, origin, library.
   // Default audit view: visible + top-level only.
@@ -1093,7 +1186,8 @@
       summarize(msg);
       renderList(msg);
       updateFilterCount(msg);
-      renderDetach(msg.detaches);
+      renderDetach(msg);
+      updateDetachCount(msg);
       var has = msg.instances.length > 0 || msg.detaches.length > 0;
       el("csvBtn").disabled = !has;
       el("xlsxBtn").disabled = !has;

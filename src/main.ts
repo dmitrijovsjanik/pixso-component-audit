@@ -60,6 +60,7 @@ interface DetachRecord {
   page: string;
   path: string;
   nodeId: string;
+  visible: boolean; // effective visibility (this node + all ancestors)
 }
 
 // ---------- helpers ----------
@@ -656,12 +657,14 @@ async function runScan() {
     let scanned = 0;
     for (const page of pages) {
       if (abort) break;
-      const stack: { node: SceneNode; pathFrame: PathFrame | null }[] = [];
-      for (const child of kidsOf(page)) stack.push({ node: child, pathFrame: null });
+      const stack: { node: SceneNode; pathFrame: PathFrame | null; parentVisible: boolean }[] = [];
+      for (const child of kidsOf(page)) stack.push({ node: child, pathFrame: null, parentVisible: true });
       while (stack.length > 0) {
         if (abort) break;
-        const { node, pathFrame } = stack.pop()!;
+        const { node, pathFrame, parentVisible } = stack.pop()!;
         scanned++;
+        const selfVisible = "visible" in node ? (node as SceneNode).visible : true;
+        const effectivelyVisible = parentVisible && selfVisible;
         const isContainerLike = node.type === "FRAME" || node.type === "GROUP" || node.type === "COMPONENT";
         if (isContainerLike && nameSet.has(node.name.toLowerCase())) {
           detaches.push({
@@ -670,6 +673,7 @@ async function runScan() {
             page: page.name,
             path: buildPath(pathFrame),
             nodeId: node.id,
+            visible: effectivelyVisible,
           });
         }
         if ("children" in node) {
@@ -678,7 +682,7 @@ async function runScan() {
             parent: pathFrame,
             depth: (pathFrame ? pathFrame.depth : 0) + 1,
           };
-          for (const kid of kidsOf(node)) stack.push({ node: kid, pathFrame: childFrame });
+          for (const kid of kidsOf(node)) stack.push({ node: kid, pathFrame: childFrame, parentVisible: effectivelyVisible });
         }
         // Keep the UI alive during this ~285k-node pass.
         if (scanned % CHUNK_SIZE === 0) {
@@ -713,7 +717,7 @@ async function runScan() {
   pixso.ui.postMessage({
     type: "result",
     fileName,
-    buildId: "BUILD-previews-v4",
+    buildId: "BUILD-detach-group-v5",
     instances,
     detaches,
     aborted: abort,
