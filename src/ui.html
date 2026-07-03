@@ -17,23 +17,39 @@
     color: var(--fg); background: var(--bg);
     display: flex; flex-direction: column; overflow: hidden;
   }
+  /* two top-level modes fill the remaining height */
+  #auditMode, #mergeMode { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   /* the active results view fills the remaining height */
-  #instancesView, #detachView, #mergeView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #instancesView, #detachView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #debugView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  /* Merge tab */
+  /* top mode switch (segmented) */
+  .modeswitch { display: flex; gap: 2px; background: var(--border); padding: 2px; border-radius: 8px; }
+  .modeswitch button {
+    font: inherit; font-weight: 600; padding: 5px 16px; border: none; border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer;
+  }
+  .modeswitch button.active { background: #fff; color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  /* Merge mode */
   .merge-top { padding: 8px 14px 0; }
   .mergedrop {
-    border: 2px dashed var(--border); border-radius: 10px; padding: 18px; text-align: center;
+    border: 2px dashed var(--border); border-radius: 10px; padding: 14px; text-align: center;
     color: var(--muted); cursor: pointer; background: #fafafa; font-size: 12px;
   }
   .mergedrop.over { border-color: #93c5fd; background: #eff6ff; color: var(--fg); }
   .mergedrop b { color: var(--fg); }
-  .mergefiles { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-  .mf { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; }
-  .mf-nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mf-meta { color: var(--muted); white-space: nowrap; }
-  .mf-err { color: var(--danger); white-space: nowrap; }
-  .mf-rm { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+  /* loaded files as an inline, horizontally-scrolling row of chips */
+  .mergefiles { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; padding-bottom: 2px; }
+  .mergefiles:empty { display: none; }
+  .mf {
+    display: inline-flex; align-items: center; gap: 6px; flex: none; white-space: nowrap;
+    padding: 3px 6px 3px 10px; border: 1px solid var(--border); border-radius: 14px;
+    background: #f3f4f6; font-size: 11px; max-width: 220px;
+  }
+  .mf-nm { overflow: hidden; text-overflow: ellipsis; }
+  .mf-meta { color: var(--muted); }
+  .mf.mf-bad { background: #fef2f2; border-color: #fecaca; }
+  .mf-err { color: var(--danger); }
+  .mf-rm { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
   .mf-rm:hover { color: var(--danger); }
   .summary-inline {
     font-size: 11px; color: var(--muted); white-space: nowrap;
@@ -142,7 +158,9 @@
   .chip.master { background: #fef3c7; color: #92400e; }
   .flag { color: var(--muted); }
   .flag.on { color: var(--fg); font-weight: 600; }
-  .empty { padding: 24px; text-align: center; color: var(--muted); }
+  /* empty-state cell: centered, no border line, fills the table area */
+  td.empty { text-align: center; color: var(--muted); border-bottom: none; padding: 40px 24px; }
+  tr:has(> td.empty):hover td { background: transparent; }
   .note { padding: 6px 14px; color: var(--muted); font-style: italic; }
   .filterbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; flex-wrap: wrap; }
   .filterbar input[type="text"] {
@@ -192,32 +210,37 @@
   <div class="rz rz-br" data-rz="br"></div>
 
   <header>
+    <div class="modeswitch">
+      <button id="modeAudit" data-mode="audit">Audit</button>
+      <button id="modeMerge" data-mode="merge">Merge</button>
+    </div>
     <h1 id="fileName"></h1>
   </header>
 
-  <div class="toolbar">
-    <button id="scanBtn" class="primary">Scan file</button>
-    <div id="summaryInline" class="summary-inline"></div>
-    <div class="spacer" style="flex:1"></div>
-    <button id="csvBtn" disabled>Export CSV</button>
-    <button id="xlsxBtn" disabled>Export XLSX</button>
-  </div>
-
-  <div class="progress-wrap" id="progWrap" style="display:none">
-    <div class="proghead">
-      <span class="spinner"></span>
-      <span id="progPhase" class="progphase">Starting…</span>
-      <span id="progElapsed" class="progelapsed">0s</span>
+  <!-- ============ AUDIT ============ -->
+  <div id="auditMode" style="display:none">
+    <div class="toolbar">
+      <button id="scanBtn" class="primary">Start scan</button>
+      <div id="summaryInline" class="summary-inline"></div>
+      <div class="spacer" style="flex:1"></div>
+      <button id="csvBtn" disabled>Export CSV</button>
+      <button id="xlsxBtn" disabled>Export XLSX</button>
     </div>
-    <div id="progCounters" class="progcounters"></div>
-  </div>
 
-  <div class="tabs" id="tabs" style="align-items:center; display:none">
-    <button data-tab="instances" class="active">Instances</button>
-    <button data-tab="detach">Detach (heuristic)</button>
-    <button data-tab="merge">Merge</button>
-    <button data-tab="debug">Debug</button>
-  </div>
+    <div class="progress-wrap" id="progWrap" style="display:none">
+      <div class="proghead">
+        <span class="spinner"></span>
+        <span id="progPhase" class="progphase">Starting…</span>
+        <span id="progElapsed" class="progelapsed">0s</span>
+      </div>
+      <div id="progCounters" class="progcounters"></div>
+    </div>
+
+    <div class="tabs" id="tabs" style="align-items:center; display:none">
+      <button data-tab="instances" class="active">Instances</button>
+      <button data-tab="detach">Detach (heuristic)</button>
+      <button data-tab="debug">Debug</button>
+    </div>
 
   <div id="instancesView">
     <div class="filterbar">
@@ -264,8 +287,20 @@
     </table></div>
   </div>
 
-  <div id="mergeView" style="display:none">
-    <div class="note">Combine .xlsx exports from this plugin (from other files/projects). Rows with the same Component + Library are merged and their counts summed.</div>
+  <div id="debugView" style="display:none; padding:8px 14px 10px">
+    <div class="summary" style="margin:0 0 4px">Diagnostic (select all &amp; copy manually):</div>
+    <textarea id="debugText" readonly style="width:100%; height:260px; font:11px/1.4 monospace; border:1px solid var(--border); border-radius:6px; padding:8px; resize:vertical;"></textarea>
+  </div>
+  </div><!-- /auditMode -->
+
+  <!-- ============ MERGE ============ -->
+  <div id="mergeMode" style="display:none">
+    <div class="toolbar">
+      <button id="mergeExportBtn" class="primary" disabled>Export merged .xlsx</button>
+      <div class="spacer" style="flex:1"></div>
+      <span class="filtercount" id="mergeCount"></span>
+      <button id="mergeClearBtn" disabled>Clear</button>
+    </div>
     <div class="merge-top">
       <div id="mergeDrop" class="mergedrop">
         <b>Drag &amp; drop .xlsx exports here</b> — or click to choose
@@ -273,21 +308,11 @@
       </div>
       <div id="mergeFiles" class="mergefiles"></div>
     </div>
-    <div class="filterbar">
-      <button id="mergeExportBtn" class="primary" disabled>Export merged .xlsx</button>
-      <button id="mergeClearBtn" disabled>Clear</button>
-      <span class="filtercount" id="mergeCount"></span>
-    </div>
     <div class="tablewrap"><table id="mergeTable">
       <colgroup><col style="width:58%" /><col style="width:14%" /><col style="width:28%" /></colgroup>
       <thead></thead>
       <tbody><tr><td class="empty">Drop .xlsx exports above to combine them.</td></tr></tbody>
     </table></div>
-  </div>
-
-  <div id="debugView" style="display:none; padding:8px 14px 10px">
-    <div class="summary" style="margin:0 0 4px">Diagnostic (select all &amp; copy manually):</div>
-    <textarea id="debugText" readonly style="width:100%; height:260px; font:11px/1.4 monospace; border:1px solid var(--border); border-radius:6px; padding:8px; resize:vertical;"></textarea>
   </div>
 
 <script>
@@ -357,28 +382,41 @@
   function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
 
   var scanningNow = false;
-  var currentTab = "instances";
-  // Show exactly one of the three views. Nothing shows during a scan or before
-  // the first result. Uses display:flex to match the CSS (block would break the
-  // full-height flex layout).
+  var currentMode = "";          // "" (nothing yet) | "audit" | "merge"
+  var currentTab = "instances";  // audit sub-tab
+
+  // Top-level layout: which mode is shown, and within audit which sub-tab.
+  // At start currentMode === "" so both modes are hidden — only the two mode
+  // buttons in the header are visible.
   function applyViews() {
-    // Nothing shows during a scan. Otherwise the active tab's view shows; the
-    // Instances/Detach tables carry their own "No scan yet" empty state.
-    var vis = scanningNow ? "" : currentTab;
+    var audit = currentMode === "audit";
+    var merge = currentMode === "merge";
+    el("auditMode").style.display = audit ? "flex" : "none";
+    el("mergeMode").style.display = merge ? "flex" : "none";
+    // mode buttons active state
+    el("modeAudit").classList.toggle("active", audit);
+    el("modeMerge").classList.toggle("active", merge);
+
+    // audit sub-tabs (hidden during a scan)
+    var vis = (audit && !scanningNow) ? currentTab : "";
     el("instancesView").style.display = (vis === "instances") ? "flex" : "none";
     el("detachView").style.display = (vis === "detach") ? "flex" : "none";
-    el("mergeView").style.display = (vis === "merge") ? "flex" : "none";
     el("debugView").style.display = (vis === "debug") ? "flex" : "none";
-    el("tabs").style.display = scanningNow ? "none" : "flex";
+    el("tabs").style.display = (audit && !scanningNow) ? "flex" : "none";
     if (vis === "debug") el("debugText").value = buildDebug();
   }
 
-  var hasResult = false; // a scan has completed at least once → show tabs
+  function setMode(mode) {
+    currentMode = mode;
+    applyViews();
+    if (mode === "merge") renderMergeAll();
+  }
+
   function setScanning(on) {
     scanningNow = on;
     el("scanBtn").disabled = on;
     el("progWrap").style.display = on ? "block" : "none";
-    applyViews(); // hides results + tabs while scanning; restores after
+    applyViews(); // hides sub-tabs while scanning; restores after
     if (on) {
       el("summaryInline").innerHTML = "";
       // New scan → previews from the previous file are stale.
@@ -430,7 +468,11 @@
   wireFocus("instTable");
   wireFocus("detachTable");
 
-  // Tabs
+  // Top mode switch: Audit | Merge.
+  el("modeAudit").onclick = function () { setMode("audit"); };
+  el("modeMerge").onclick = function () { setMode("merge"); };
+
+  // Audit sub-tabs.
   var tabBtns = document.querySelectorAll(".tabs button");
   tabBtns.forEach(function (b) {
     b.onclick = function () {
@@ -852,7 +894,7 @@
     });
   }
   wireTree();
-  applyViews(); // start clean: no views until the first scan completes
+  applyViews(); // start empty: only the Audit/Merge mode buttons are visible
 
   // Filters/toggles → re-render from lastResult.
   function rerender() {
@@ -1387,8 +1429,12 @@
     var wrap = el("mergeFiles");
     if (!mergeFiles.length) { wrap.innerHTML = ""; return; }
     wrap.innerHTML = mergeFiles.map(function(f, i){
-      var meta = f.error ? '<span class="mf-err">' + esc(f.error) + '</span>' : '<span class="mf-meta">' + f.rows.length + ' rows</span>';
-      return '<div class="mf"><span class="mf-nm">' + esc(f.name) + '</span>' + meta + '<button class="mf-rm" data-i="' + i + '" title="Remove">×</button></div>';
+      var meta = f.error
+        ? '<span class="mf-err" title="' + esc(f.error) + '">error</span>'
+        : '<span class="mf-meta">' + f.rows.length + '</span>';
+      return '<span class="mf' + (f.error ? ' mf-bad' : '') + '" title="' + esc(f.name) + '">' +
+             '<span class="mf-nm">' + esc(f.name) + '</span>' + meta +
+             '<button class="mf-rm" data-i="' + i + '" title="Remove">×</button></span>';
     }).join("");
     wrap.querySelectorAll(".mf-rm").forEach(function(btn){
       btn.onclick = function(){ mergeFiles.splice(+btn.getAttribute("data-i"),1); renderMergeAll(); };
@@ -1487,8 +1533,7 @@
       el("summaryInline").innerHTML = '<span style="color:var(--danger)">Error: ' + esc(msg.message) + '</span>';
     } else if (msg.type === "result") {
       lastResult = msg;
-      hasResult = true;
-      setScanning(false); // reveals the tabs now that hasResult is set
+      setScanning(false);
       el("fileName").textContent = msg.fileName || "";
       populateLibFilter(msg);
       summarize(msg);
