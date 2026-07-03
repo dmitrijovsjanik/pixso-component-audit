@@ -764,7 +764,7 @@ async function exportThumbnail(key: string, nodeIds: string[]): Promise<void> {
       if (!node || typeof node.exportAsync !== "function") continue;
       const bytes: Uint8Array = await node.exportAsync({
         format: "PNG",
-        constraint: { type: "WIDTH", value: 96 }, // small; UI shows it ~28px
+        constraint: { type: "WIDTH", value: 96 }, // UI shows it at 40px (2x for retina)
       });
       if (!bytes || !bytes.length) continue;
       const b64 = (pixso as any).base64Encode
