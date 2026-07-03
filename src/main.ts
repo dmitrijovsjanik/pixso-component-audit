@@ -20,11 +20,17 @@
 
 pixso.showUI(__html__, { width: 860, height: 660 });
 
-const CHUNK_SIZE = 800; // nodes processed before yielding (no network in phase 1 → can be large)
+const CHUNK_SIZE = 5000; // nodes processed before yielding. Phase 1 has no network,
+// so larger chunks mean fewer cross-thread yields (each yield flushes queued
+// progress messages + lets the React UI re-render — expensive on huge files).
 const LIB_CONCURRENCY = 8; // parallel getLibraryInfoAsync calls in phase 2
 const LIB_TIMEOUT_MS = 4000;
 
 let abort = false;
+// Guard against a second scan starting while one is already running. Two
+// concurrent scans share the module-level abort flag and library caches and
+// interleave their progress messages (the "phase 1-2-1-2 jumping" bug).
+let scanning = false;
 
 interface InstanceRecord {
   componentName: string; // set-level name (variants collapsed)
@@ -58,13 +64,35 @@ interface DetachRecord {
 
 // ---------- helpers ----------
 
-function isEffectivelyVisible(node: BaseNode): boolean {
-  let current: BaseNode | null = node;
-  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-    if ("visible" in current && !(current as SceneNode).visible) return false;
-    current = current.parent;
+// Safe children accessor. Some nodes report `"children" in node` true but their
+// .children is momentarily undefined (unloaded page, detached/proxy node). A raw
+// `for..of` over that throws "Symbol.iterator of undefined" and aborts the whole
+// scan — so always go through this.
+function kidsOf(node: any): readonly SceneNode[] {
+  const c = node && node.children;
+  return c && typeof c.length === "number" ? c : [];
+}
+
+// Lazy path: instead of building a string[] for every one of the ~285k nodes,
+// the walk carries an immutable linked list of ancestor names. We only
+// materialize a " / "-joined string for the ~24k nodes we actually record, by
+// walking this list backwards. depth is O(1) via a counter on the frame.
+interface PathFrame {
+  name: string;
+  parent: PathFrame | null;
+  depth: number;
+}
+
+function buildPath(frame: PathFrame | null): string {
+  if (!frame) return "";
+  const parts: string[] = [];
+  let f: PathFrame | null = frame;
+  while (f) {
+    parts.push(f.name);
+    f = f.parent;
   }
-  return true;
+  parts.reverse();
+  return parts.join(" / ");
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
@@ -96,9 +124,17 @@ function yieldToUI(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
 
-// Progress with explicit phase, current/total counts and an optional detail line.
-function progress(phase: string, done: number, total: number, detail?: string) {
-  pixso.ui.postMessage({ type: "progress", phase, done, total, detail: detail || "" });
+// Progress with explicit phase, current/total counts, and either a detail line
+// or a set of fixed-label counters (Layers / Instances / …) the UI renders as
+// stable rows with numbers growing in place (no flickering re-composed string).
+function progress(
+  phase: string,
+  done: number,
+  total: number,
+  detail?: string,
+  counters?: { key: string; label: string; value: number }[]
+) {
+  pixso.ui.postMessage({ type: "progress", phase, done, total, detail: detail || "", counters });
 }
 
 // A master component may itself be a variant inside a COMPONENT_SET. For audit
@@ -152,7 +188,9 @@ const keyToLibrary = new Map<string, { name: string; key: string }>();
 let libraryMapBuilt = false;
 let libraryMapMeta: any = { libraries: [], componentKeys: 0, error: null };
 
-async function buildLibraryMap(): Promise<void> {
+async function buildLibraryMap(
+  onTick?: (done: number, total: number) => void
+): Promise<void> {
   if (libraryMapBuilt) return;
   libraryMapBuilt = true;
   try {
@@ -161,14 +199,29 @@ async function buildLibraryMap(): Promise<void> {
       libraryMapMeta.error = "getLibraryListAsync timed out or returned null";
       return;
     }
-    for (const lib of list) {
-      if (!lib || !lib.subscribed) continue;
-      let assets: any = null;
-      try {
-        assets = await withTimeout<any>((pixso as any).getLibraryByKeyAsync(lib.key), 15000);
-      } catch (e) {
-        assets = null;
-      }
+    const subscribed = list.filter((lib) => lib && lib.subscribed);
+
+    // Fetch all subscribed libraries in PARALLEL — getLibraryByKeyAsync is a
+    // network call and doing them one-by-one was the "stuck on phase 1→2" hang.
+    let done = 0;
+    const total = subscribed.length;
+    if (onTick) onTick(0, total);
+    const fetched = await Promise.all(
+      subscribed.map(async (lib) => {
+        let assets: any = null;
+        try {
+          assets = await withTimeout<any>((pixso as any).getLibraryByKeyAsync(lib.key), 15000);
+        } catch (e) {
+          assets = null;
+        }
+        done++;
+        if (onTick) onTick(done, total);
+        return { lib, assets };
+      })
+    );
+
+    // Indexing is sequential (Map writes) but cheap — no network here.
+    for (const { lib, assets } of fetched) {
       const compCount = assets && assets.componentList ? assets.componentList.length : 0;
       libraryMapMeta.libraries.push({ name: lib.name, key: lib.key, subscribed: lib.subscribed, components: compCount });
       if (!assets || !assets.componentList) continue;
@@ -267,12 +320,24 @@ async function runPool<T>(
 // ---------- main scan ----------
 
 async function scan() {
+  if (scanning) return; // a scan is already in flight — ignore duplicate starts
+  scanning = true;
+  try {
+    await runScan();
+  } finally {
+    scanning = false;
+  }
+}
+
+async function runScan() {
   abort = false;
   const tStart = Date.now();
   const timings: Record<string, number> = {};
 
-  // Load all pages if the API supports it.
-  progress("Preparing", 0, 1, "Loading pages…");
+  // Load all pages if the API supports it. On big files this single call can
+  // take a while and sends no progress of its own, so set an honest status
+  // first — the UI spinner keeps animating meanwhile.
+  progress("Preparing", 0, 0, "Loading all pages… (can take a while on large files)");
   try {
     if (typeof (pixso as any).loadAllPagesAsync === "function") {
       await (pixso as any).loadAllPagesAsync();
@@ -281,21 +346,22 @@ async function scan() {
     pixso.ui.postMessage({ type: "warn", message: "loadAllPagesAsync failed — scanning only loaded pages." });
   }
 
-  const pages = ((pixso.root && pixso.root.children) || [pixso.currentPage]).filter((p) => p.type === "PAGE");
+  const rootKids = (pixso.root && (pixso.root as any).children) || [];
+  const pageSource = rootKids.length ? rootKids : (pixso.currentPage ? [pixso.currentPage] : []);
+  const pages = pageSource.filter((p: any) => p && p.type === "PAGE");
+  if (!pages.length) {
+    pixso.ui.postMessage({ type: "error", message: "No pages to scan (file not loaded yet?). Try reopening the plugin." });
+    return;
+  }
   const currentFileKey = (pixso as any).fileKey || null;
 
   // ===== PHASE 1: walk tree, NO network =====
-  // First a cheap count of total nodes so the progress bar is meaningful.
-  progress("Phase 1/3 · counting", 0, 1, "Counting layers…");
+  // We no longer do a separate counting pass — on a 285k-node file that was a
+  // full second traversal that froze the UI for no real benefit (the bar can't
+  // be accurate before the walk anyway). Instead we report live counters:
+  // layers processed + instances found. totalNodes is just the final tally.
+  progress("Phase 1/3 · scanning", 0, 0, "Starting…");
   let totalNodes = 0;
-  for (const page of pages) {
-    const stack: SceneNode[] = (page as PageNode).children.slice();
-    while (stack.length) {
-      const n = stack.pop()!;
-      totalNodes++;
-      if ("children" in n) for (const k of (n as ChildrenMixin).children) stack.push(k as SceneNode);
-    }
-  }
 
   const instances: InstanceRecord[] = [];
   const allComponentNames = new Set<string>();
@@ -311,14 +377,29 @@ async function scan() {
 
   for (const page of pages) {
     if (abort) break;
-    const stack: { node: SceneNode; path: string[]; ancInst: boolean; ancLibInst: boolean; libAncestor: InstanceRecord | null; parentInstId: string | null }[] = [];
-    for (const child of (page as PageNode).children) {
-      stack.push({ node: child, path: [], ancInst: false, ancLibInst: false, libAncestor: null, parentInstId: null });
+    const stack: { node: SceneNode; pathFrame: PathFrame | null; parentVisible: boolean; ancInst: boolean; ancLibInst: boolean; libAncestor: InstanceRecord | null; parentInstId: string | null }[] = [];
+    for (const child of kidsOf(page)) {
+      stack.push({ node: child, pathFrame: null, parentVisible: true, ancInst: false, ancLibInst: false, libAncestor: null, parentInstId: null });
     }
     while (stack.length > 0) {
       if (abort) break;
-      const { node, path, ancInst, ancLibInst, libAncestor, parentInstId } = stack.pop()!;
+      const { node, pathFrame, parentVisible, ancInst, ancLibInst, libAncestor, parentInstId } = stack.pop()!;
       processed++;
+
+      // Effective visibility without walking up the tree: a node is visible iff
+      // every ancestor is visible AND it is itself visible. We already know the
+      // parent chain's visibility from the stack.
+      const selfVisible =
+        "visible" in node ? (node as SceneNode).visible : true;
+      const effectivelyVisible = parentVisible && selfVisible;
+
+      // Collect every component/set name for the detach heuristic here, during
+      // the main walk — this replaces a separate full recursive traversal
+      // (walkLocal) that re-visited all 285k nodes and risked a stack overflow
+      // on deep trees.
+      if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
+        allComponentNames.add(node.name);
+      }
 
       let childAncInst = ancInst;
       let childAncLibInst = ancLibInst;
@@ -344,11 +425,11 @@ async function scan() {
           origin: master ? "local" : "unknown", // provisional; phase 2 upgrades to "library"
           libraryName: null,
           libraryKey: null,
-          visible: isEffectivelyVisible(inst),
+          visible: effectivelyVisible,
           directlyVisible: inst.visible,
           page: page.name,
-          path: path.join(" / "),
-          depth: path.length,
+          path: buildPath(pathFrame),
+          depth: pathFrame ? pathFrame.depth : 0,
           nestedInsideInstance: ancInst,
           nestedInsideLibraryInstance: ancLibInst,
           inheritedFromParent: false,
@@ -402,11 +483,11 @@ async function scan() {
           origin: "local", // provisional; phase 2 may upgrade a remote master to library
           libraryName: null,
           libraryKey: null,
-          visible: isEffectivelyVisible(master),
+          visible: effectivelyVisible,
           directlyVisible: master.visible,
           page: page.name,
-          path: path.join(" / "),
-          depth: path.length,
+          path: buildPath(pathFrame),
+          depth: pathFrame ? pathFrame.depth : 0,
           nestedInsideInstance: ancInst,
           nestedInsideLibraryInstance: ancLibInst,
           inheritedFromParent: false,
@@ -428,34 +509,37 @@ async function scan() {
       }
 
       if ("children" in node) {
-        const nextPath = path.concat([node.name]);
-        for (const kid of (node as ChildrenMixin).children) {
-          stack.push({ node: kid, path: nextPath, ancInst: childAncInst, ancLibInst: childAncLibInst, libAncestor: childLibAncestor, parentInstId: childParentInstId });
+        // One shared frame for all children of this node (immutable, so safe to
+        // share). Replaces per-child array copies (path.concat) in the hot loop.
+        const childFrame: PathFrame = {
+          name: node.name,
+          parent: pathFrame,
+          depth: (pathFrame ? pathFrame.depth : 0) + 1,
+        };
+        for (const kid of kidsOf(node)) {
+          stack.push({ node: kid, pathFrame: childFrame, parentVisible: effectivelyVisible, ancInst: childAncInst, ancLibInst: childAncLibInst, libAncestor: childLibAncestor, parentInstId: childParentInstId });
         }
       }
 
       if (processed % CHUNK_SIZE === 0) {
-        progress("Phase 1/3 · scanning layers", processed, totalNodes,
-          instances.length + " instances found");
+        // Live counters, no fake percent (total=0 tells the UI to show a count).
+        progress("Phase 1/3 · scanning layers", processed, 0, "", [
+          { key: "layers", label: "Layers", value: processed },
+          { key: "instances", label: "Instances", value: instances.length },
+        ]);
         await yieldToUI();
       }
     }
   }
+  totalNodes = processed;
   timings.phase1_walk = Date.now() - tPhase1;
-  progress("Phase 1/3 · scanning layers", totalNodes, totalNodes, instances.length + " instances found");
+  progress("Phase 1/3 · scanning layers", processed, 0, "", [
+    { key: "layers", label: "Layers", value: processed },
+    { key: "instances", label: "Instances", value: instances.length },
+  ]);
 
-  // Local component/set names for detach matching (cheap, no network).
-  try {
-    const walkLocal = (nodes: readonly SceneNode[]) => {
-      for (const n of nodes) {
-        if (n.type === "COMPONENT" || n.type === "COMPONENT_SET") allComponentNames.add(n.name);
-        if ("children" in n) walkLocal((n as ChildrenMixin).children as readonly SceneNode[]);
-      }
-    };
-    for (const page of pages) walkLocal((page as PageNode).children);
-  } catch (e) {
-    /* non-fatal */
-  }
+  // (Component/set names for the detach heuristic are already collected during
+  // the main walk above — no extra traversal needed.)
 
   // ===== PHASE 2: resolve libraries for UNIQUE masters, in parallel =====
   // Diagnostics: capture raw API responses for a sample of masters so we can
@@ -466,13 +550,18 @@ async function scan() {
 
   // Build the reliable key->library map ONCE before resolving masters.
   progress("Phase 2/3 · loading libraries", 0, 1, "Fetching subscribed libraries…");
-  await buildLibraryMap();
+  await buildLibraryMap((done, total) =>
+    progress("Phase 2/3 · loading libraries", done, total, "", [
+      { key: "libraries", label: "Libraries loaded", value: done },
+    ])
+  );
   diag.libraryMap = libraryMapMeta;
 
   const masterBuckets = Array.from(uniqueMasters.values());
   if (masterBuckets.length && !abort) {
-    progress("Phase 2/3 · resolving libraries", 0, masterBuckets.length,
-      masterBuckets.length + " unique components to check");
+    progress("Phase 2/3 · resolving libraries", 0, masterBuckets.length, "", [
+      { key: "resolved", label: "Components checked", value: 0 },
+    ]);
     await runPool(
       masterBuckets,
       async (bucket) => {
@@ -525,8 +614,9 @@ async function scan() {
         }
       },
       LIB_CONCURRENCY,
-      (done, total) => progress("Phase 2/3 · resolving libraries", done, total,
-        done + " / " + total + " components")
+      (done, total) => progress("Phase 2/3 · resolving libraries", done, total, "", [
+        { key: "resolved", label: "Components checked", value: done },
+      ])
     );
   }
   // Probe a few non-remote masters too — to check none of them are actually library.
@@ -561,28 +651,41 @@ async function scan() {
   const tPhase3 = Date.now();
   const detaches: DetachRecord[] = [];
   if (!abort) {
-    progress("Phase 3/3 · detach heuristic", 0, 1, "Matching layer names…");
+    progress("Phase 3/3 · detach heuristic", 0, 0, "Matching layer names…");
     const nameSet = new Set(Array.from(allComponentNames).map((n) => n.toLowerCase()));
+    let scanned = 0;
     for (const page of pages) {
       if (abort) break;
-      const stack: { node: SceneNode; path: string[] }[] = [];
-      for (const child of (page as PageNode).children) stack.push({ node: child, path: [] });
+      const stack: { node: SceneNode; pathFrame: PathFrame | null }[] = [];
+      for (const child of kidsOf(page)) stack.push({ node: child, pathFrame: null });
       while (stack.length > 0) {
         if (abort) break;
-        const { node, path } = stack.pop()!;
+        const { node, pathFrame } = stack.pop()!;
+        scanned++;
         const isContainerLike = node.type === "FRAME" || node.type === "GROUP" || node.type === "COMPONENT";
         if (isContainerLike && nameSet.has(node.name.toLowerCase())) {
           detaches.push({
             layerName: node.name,
             matchedComponentName: node.name,
             page: page.name,
-            path: path.join(" / "),
+            path: buildPath(pathFrame),
             nodeId: node.id,
           });
         }
         if ("children" in node) {
-          const nextPath = path.concat([node.name]);
-          for (const kid of (node as ChildrenMixin).children) stack.push({ node: kid, path: nextPath });
+          const childFrame: PathFrame = {
+            name: node.name,
+            parent: pathFrame,
+            depth: (pathFrame ? pathFrame.depth : 0) + 1,
+          };
+          for (const kid of kidsOf(node)) stack.push({ node: kid, pathFrame: childFrame });
+        }
+        // Keep the UI alive during this ~285k-node pass.
+        if (scanned % CHUNK_SIZE === 0) {
+          progress("Phase 3/3 · detach heuristic", scanned, 0, "", [
+            { key: "detaches", label: "Possible detaches", value: detaches.length },
+          ]);
+          await yieldToUI();
         }
       }
     }
@@ -610,7 +713,7 @@ async function scan() {
   pixso.ui.postMessage({
     type: "result",
     fileName,
-    buildId: "BUILD-2026-07-02-tree-view-v8",
+    buildId: "BUILD-previews-v4",
     instances,
     detaches,
     aborted: abort,
@@ -636,10 +739,69 @@ pixso.ui.onmessage = (msg: any) => {
     abort = true;
   } else if (msg.type === "focus") {
     focusNode(msg.nodeId);
+  } else if (msg.type === "thumbnail") {
+    // msg: { key, nodeIds: string[] } — export a small preview of the first
+    // node that renders. The UI keys previews by component key.
+    exportThumbnail(msg.key, msg.nodeIds || []);
   } else if (msg.type === "close") {
     pixso.closePlugin();
   }
 };
+
+// Cache exported previews by component key so re-requests are instant.
+const thumbnailCache = new Map<string, string>();
+
+async function exportThumbnail(key: string, nodeIds: string[]): Promise<void> {
+  const cached = thumbnailCache.get(key);
+  if (cached) {
+    pixso.ui.postMessage({ type: "thumbnailResult", key, dataUrl: cached });
+    return;
+  }
+  // Try each candidate node until one exports (a deleted/odd node is skipped).
+  for (const id of nodeIds) {
+    try {
+      const node = pixso.getNodeById(id) as any;
+      if (!node || typeof node.exportAsync !== "function") continue;
+      const bytes: Uint8Array = await node.exportAsync({
+        format: "PNG",
+        constraint: { type: "WIDTH", value: 96 }, // UI shows it at 40px (2x for retina)
+      });
+      if (!bytes || !bytes.length) continue;
+      const b64 = (pixso as any).base64Encode
+        ? (pixso as any).base64Encode(bytes)
+        : bytesToBase64(bytes);
+      const dataUrl = "data:image/png;base64," + b64;
+      thumbnailCache.set(key, dataUrl);
+      pixso.ui.postMessage({ type: "thumbnailResult", key, dataUrl });
+      return;
+    } catch (e) {
+      /* try the next candidate */
+    }
+  }
+  // Nothing rendered — tell the UI so it can stop showing a spinner.
+  pixso.ui.postMessage({ type: "thumbnailResult", key, dataUrl: null });
+}
+
+// Fallback base64 (used only if pixso.base64Encode is unavailable).
+function bytesToBase64(bytes: Uint8Array): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+  let i = 0;
+  for (; i + 2 < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63] + chars[(n >> 6) & 63] + chars[n & 63];
+  }
+  if (i < bytes.length) {
+    const rem = bytes.length - i;
+    const b0 = bytes[i];
+    const b1 = rem > 1 ? bytes[i + 1] : 0;
+    const n = (b0 << 16) | (b1 << 8);
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63];
+    out += rem > 1 ? chars[(n >> 6) & 63] : "=";
+    out += "=";
+  }
+  return out;
+}
 
 // Select a node and zoom the viewport to it, switching page if needed.
 function focusNode(nodeId: string) {

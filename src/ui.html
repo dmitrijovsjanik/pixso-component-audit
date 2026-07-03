@@ -2,8 +2,6 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<!-- SheetJS for xlsx export. If the CDN is blocked, xlsx button falls back to CSV. -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root {
     --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --border: #e5e7eb;
@@ -32,9 +30,21 @@
   button.danger { color: var(--danger); border-color: #fecaca; background: #fff; }
   .summary { padding: 4px 14px 0; color: var(--muted); }
   .summary b { color: var(--fg); }
-  .progress-wrap { padding: 0 14px 10px; }
-  .bar { height: 6px; background: var(--border); border-radius: 4px; overflow: hidden; }
-  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .progress-wrap { padding: 8px 14px 12px; }
+  .proghead { display: flex; align-items: center; gap: 8px; }
+  .progphase { font-weight: 600; }
+  .progelapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; flex: none;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progcounters { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
+  .progitem { white-space: nowrap; }
+  .progitem:not(:last-child):after { content: "·"; color: var(--muted); margin-left: 6px; }
+  .progitem .lbl { color: var(--muted); }
+  .progitem .val { font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 4px; }
   .tabs { display: flex; gap: 4px; padding: 8px 14px 0; }
   .tabs button { border-radius: 6px 6px 0 0; }
   .tabs button.active { background: var(--bg); border-bottom-color: var(--bg); font-weight: 600; }
@@ -65,6 +75,15 @@
   tr.var { cursor: pointer; }
   tr.var:hover td { background: #f8fafc; }
   .tw { display: inline-block; width: 12px; color: var(--muted); font-size: 9px; }
+  .namecell > * { vertical-align: middle; }
+  .thumb {
+    display: inline-block; width: 40px; height: 40px; margin: 0 6px 0 2px;
+    border: 1px solid var(--border); border-radius: 3px; background: #fff;
+    object-fit: contain; vertical-align: middle;
+  }
+  .thumb-ph, .thumb-empty { background: #f3f4f6; }
+  .thumb-ph { background-image: linear-gradient(90deg,#f3f4f6,#e9eaed,#f3f4f6); background-size: 200% 100%; animation: thumbshimmer 1.2s linear infinite; }
+  @keyframes thumbshimmer { to { background-position: -200% 0; } }
   .hiddenmark { color: #9ca3af; }
   tr.leaf td:first-child { color: #374151; }
   .toggle-inline { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--fg); }
@@ -89,28 +108,56 @@
   }
   .filterbar .toggle-inline { font-size: 11px; white-space: nowrap; }
   .filtercount { color: var(--muted); font-size: 11px; white-space: nowrap; margin-left: auto; }
+  /* library multi-select */
+  .multiselect { position: relative; }
+  .ms-btn {
+    font: inherit; padding: 6px 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; cursor: pointer; max-width: 200px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
+  }
+  .ms-btn:after { content: " ▾"; color: var(--muted); }
+  .ms-menu {
+    position: absolute; z-index: 20; top: calc(100% + 4px); left: 0;
+    min-width: 200px; max-width: 280px; max-height: 260px; overflow: auto;
+    background: #fff; border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.12); padding: 4px;
+  }
+  .ms-menu label {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border-radius: 4px; cursor: pointer; user-select: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ms-menu label:hover { background: #eff6ff; }
+  .ms-menu input { margin: 0; }
+  .ms-clear {
+    display: block; width: 100%; text-align: left; padding: 4px 8px; margin-bottom: 2px;
+    font: inherit; font-size: 11px; color: var(--muted); background: none;
+    border: none; border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .ms-clear:hover { color: var(--fg); }
   footer { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
   footer .spacer { flex: 1; }
 </style>
 </head>
 <body>
   <header>
-    <h1>DS Component Audit</h1>
-    <span id="fileName" class="flag"></span>
+    <h1 id="fileName"></h1>
   </header>
 
   <div class="toolbar">
     <button id="scanBtn" class="primary">Scan file</button>
-    <button id="cancelBtn" class="danger" disabled>Cancel</button>
     <div class="spacer" style="flex:1"></div>
     <button id="csvBtn" disabled>Export CSV</button>
     <button id="xlsxBtn" disabled>Export XLSX</button>
   </div>
 
   <div class="progress-wrap" id="progWrap" style="display:none">
-    <div class="bar"><i id="progBar"></i></div>
-    <div class="summary" id="progPhase"></div>
-    <div class="summary" id="progText" style="color:var(--muted)"></div>
+    <div class="proghead">
+      <span class="spinner"></span>
+      <span id="progPhase" class="progphase">Starting…</span>
+      <span id="progElapsed" class="progelapsed">0s</span>
+    </div>
+    <div id="progCounters" class="progcounters"></div>
   </div>
 
   <div class="summary" id="summary"></div>
@@ -118,18 +165,16 @@
   <div class="tabs" style="align-items:center">
     <button data-tab="instances" class="active">Instances</button>
     <button data-tab="detach">Detach (heuristic)</button>
+    <button data-tab="debug">Debug</button>
   </div>
 
   <div id="instancesView">
     <div class="filterbar">
       <input type="text" id="search" placeholder="Search component name…" />
-      <select id="originFilter" title="Filter by origin">
-        <option value="">All origins</option>
-        <option value="library">Library</option>
-        <option value="local">Local</option>
-        <option value="unknown">Unresolved</option>
-      </select>
-      <select id="libFilter" title="Filter by library"><option value="">All libraries</option></select>
+      <div class="multiselect" id="libFilterWrap">
+        <button type="button" id="libFilterBtn" class="ms-btn" title="Filter by source">All sources</button>
+        <div id="libFilterMenu" class="ms-menu" style="display:none"></div>
+      </div>
       <select id="viewMode" title="View mode">
         <option value="flat">Flat (by name)</option>
         <option value="tree">Tree (nesting)</option>
@@ -154,17 +199,10 @@
     <div class="tablewrap"><table id="detachTable"><tbody><tr><td class="empty">—</td></tr></tbody></table></div>
   </div>
 
-  <div id="debugPanel" style="display:none; padding:0 14px 10px">
+  <div id="debugView" style="display:none; padding:8px 14px 10px">
     <div class="summary" style="margin:0 0 4px">Diagnostic (select all &amp; copy manually):</div>
-    <textarea id="debugText" readonly style="width:100%; height:160px; font:11px/1.4 monospace; border:1px solid var(--border); border-radius:6px; padding:8px; resize:vertical;"></textarea>
+    <textarea id="debugText" readonly style="width:100%; height:260px; font:11px/1.4 monospace; border:1px solid var(--border); border-radius:6px; padding:8px; resize:vertical;"></textarea>
   </div>
-
-  <footer>
-    <button id="debugBtn">Show debug</button>
-    <button id="copyBtn">Copy</button>
-    <div class="spacer"></div>
-    <button id="closeBtn">Close</button>
-  </footer>
 
 <script>
   var post = function (m) { parent.postMessage({ pluginMessage: m }, "*"); };
@@ -172,24 +210,50 @@
   var showHidden = false;
   var showNested = false;
   var searchQuery = "";
-  var originFilterVal = "";
-  var libFilterVal = "";
+  var libFilterVals = [];  // selected sources (lib name / local / unresolved); empty = all
   var sortKey = "count";   // default: most-used first
   var sortDir = -1;        // -1 desc, 1 asc
   var viewMode = "flat";   // "flat" (group by name) or "tree" (nesting)
 
   var el = function (id) { return document.getElementById(id); };
 
+  var elapsedTimer = null;
+  var scanStart = 0;
+  function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
+
+  var scanningNow = false;
+  var currentTab = "instances";
+  // Show exactly one of the three views (unless a scan is running → show none).
+  function applyViews() {
+    el("instancesView").style.display = (!scanningNow && currentTab === "instances") ? "block" : "none";
+    el("detachView").style.display = (!scanningNow && currentTab === "detach") ? "block" : "none";
+    el("debugView").style.display = (!scanningNow && currentTab === "debug") ? "block" : "none";
+    if (!scanningNow && currentTab === "debug") el("debugText").value = buildDebug();
+  }
+
   function setScanning(on) {
+    scanningNow = on;
     el("scanBtn").disabled = on;
-    el("cancelBtn").disabled = !on;
     el("progWrap").style.display = on ? "block" : "none";
-    if (on) { el("progBar").style.width = "0%"; el("progPhase").textContent = "Starting…"; el("progText").textContent = ""; }
+    el("summary").style.display = on ? "none" : "block";
+    applyViews(); // hide results while scanning; restore the active tab after
+    if (on) {
+      // New scan → previews from the previous file are stale.
+      thumbCache = {}; thumbRequested = {};
+      el("progPhase").textContent = "Starting…";
+      resetCounters();
+      el("progElapsed").textContent = "0s";
+      scanStart = Date.now();
+      stopElapsed();
+      elapsedTimer = setInterval(function () {
+        el("progElapsed").textContent = Math.floor((Date.now() - scanStart) / 1000) + "s";
+      }, 1000);
+    } else {
+      stopElapsed();
+    }
   }
 
   el("scanBtn").onclick = function () { setScanning(true); post({ type: "scan" }); };
-  el("cancelBtn").onclick = function () { post({ type: "cancel" }); };
-  el("closeBtn").onclick = function () { post({ type: "close" }); };
   function buildDebug() {
     if (!lastResult) return "no data yet — run a scan first";
     var payload = {
@@ -205,30 +269,6 @@
     };
     return JSON.stringify(payload, null, 2);
   }
-
-  el("debugBtn").onclick = function () {
-    var panel = el("debugPanel");
-    var showing = panel.style.display !== "none";
-    if (showing) { panel.style.display = "none"; el("debugBtn").textContent = "Show debug"; return; }
-    el("debugText").value = buildDebug();
-    panel.style.display = "block";
-    el("debugBtn").textContent = "Hide debug";
-  };
-
-  el("copyBtn").onclick = function () {
-    var ta = el("debugText");
-    if (!ta.value) ta.value = buildDebug();
-    el("debugPanel").style.display = "block";
-    el("debugBtn").textContent = "Hide debug";
-    ta.focus(); ta.select();
-    var ok = false;
-    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-    if (!ok && navigator.clipboard) {
-      navigator.clipboard.writeText(ta.value).then(function(){}, function(){});
-    }
-    el("copyBtn").textContent = ok ? "Copied!" : "Select ↑ & Cmd+C";
-    setTimeout(function(){ el("copyBtn").textContent = "Copy"; }, 1600);
-  };
 
   // Click a row → focus that node on the canvas (delegated on both tables).
   function wireFocus(tableId) {
@@ -253,13 +293,62 @@
     b.onclick = function () {
       tabBtns.forEach(function (x) { x.classList.remove("active"); });
       b.classList.add("active");
-      var t = b.getAttribute("data-tab");
-      el("instancesView").style.display = t === "instances" ? "block" : "none";
-      el("detachView").style.display = t === "detach" ? "block" : "none";
+      currentTab = b.getAttribute("data-tab");
+      applyViews();
     };
   });
 
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+
+  // Thousands separator (spaces), no toLocaleString (unreliable in some runtimes).
+  function fmtNum(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+
+  // A record's "source" = its library name, or "local" / "unresolved". This is
+  // the single origin fact: the library name IS the origin; local and
+  // unresolved are just two more entries in the same list.
+  function recSource(r) {
+    if (r.origin === "library") return r.libraryName || "(unknown library)";
+    if (r.origin === "local") return "local";
+    return "unresolved";
+  }
+  // Library multi-select match: empty selection = all; otherwise membership.
+  function libMatches(r) {
+    if (!libFilterVals.length) return true;
+    return libFilterVals.indexOf(recSource(r)) !== -1;
+  }
+
+  // Progress counters, flicker-free. Each metric (keyed) owns ONE row that is
+  // created the first time it appears and then never touched except for its
+  // number. We NEVER rebuild the container, so nothing jumps: a phase that
+  // introduces a new metric just appends a row below the existing ones; metrics
+  // from earlier phases stay put with their last value.
+  var counterRows = {}; // key -> { valEl }
+  function resetCounters() {
+    counterRows = {};
+    el("progCounters").innerHTML = "";
+  }
+  function renderCounters(counters) {
+    if (!counters || !counters.length) return;
+    var wrap = el("progCounters");
+    counters.forEach(function (c) {
+      var key = c.key || c.label;
+      var row = counterRows[key];
+      if (!row) {
+        // New metric → append an inline item; existing items are never touched.
+        var item = document.createElement("span");
+        item.className = "progitem";
+        var lbl = document.createElement("span");
+        lbl.className = "lbl"; lbl.textContent = c.label;
+        var val = document.createElement("span");
+        val.className = "val"; val.textContent = fmtNum(c.value);
+        item.appendChild(lbl); item.appendChild(val);
+        wrap.appendChild(item);
+        counterRows[key] = { valEl: val };
+      } else {
+        row.valEl.textContent = fmtNum(c.value);
+      }
+    });
+  }
 
   // Source = library name if from a library, else "local" / "unresolved".
   function sourceLabel(g) {
@@ -276,6 +365,62 @@
     return g.hasMaster ? ' <span class="chip master">master</span>' : "";
   }
 
+  // ---- lazy component previews ----
+  // Cache data URLs by component key. null = tried and failed (show nothing).
+  var thumbCache = {};
+  // Small preview <img> inside the name cell. If cached, render it directly;
+  // otherwise render a placeholder the IntersectionObserver will fill in when
+  // the row scrolls into view (so we only export what the user actually sees).
+  function thumbHtml(g) {
+    var cached = thumbCache[g.key];
+    if (cached) return '<img class="thumb" src="' + esc(cached) + '" alt="" />';
+    if (cached === null) return '<span class="thumb thumb-empty"></span>'; // tried, none
+    return '<span class="thumb thumb-ph" data-thumb-key="' + esc(g.key) +
+           '" data-thumb-nodes="' + esc((g.sampleIds || []).join(",")) + '"></span>';
+  }
+
+  // Requests we've already sent this session (avoid asking twice).
+  var thumbRequested = {};
+  // IntersectionObserver: when a placeholder scrolls into view, ask the sandbox
+  // to export that component's preview. Only visible rows trigger work.
+  var thumbObserver = ("IntersectionObserver" in window) ? new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      var elp = en.target;
+      thumbObserver.unobserve(elp);
+      var key = elp.getAttribute("data-thumb-key");
+      if (!key || thumbRequested[key] || thumbCache[key] !== undefined) return;
+      thumbRequested[key] = true;
+      var nodes = (elp.getAttribute("data-thumb-nodes") || "").split(",").filter(Boolean);
+      post({ type: "thumbnail", key: key, nodeIds: nodes });
+    });
+  }, { root: null, rootMargin: "80px" }) : null;
+
+  // Observe all current placeholders. Call after each list render.
+  function wireThumbs() {
+    if (!thumbObserver) return;
+    el("instTable").querySelectorAll(".thumb-ph").forEach(function (ph) {
+      var key = ph.getAttribute("data-thumb-key");
+      if (thumbCache[key] !== undefined) return; // already resolved
+      thumbObserver.observe(ph);
+    });
+  }
+
+  // Apply a resolved preview to every placeholder/img for that key on screen.
+  function applyThumb(key, dataUrl) {
+    var sel = '[data-thumb-key="' + (key || "").replace(/"/g, "") + '"]';
+    el("instTable").querySelectorAll(sel).forEach(function (ph) {
+      if (dataUrl) {
+        var img = document.createElement("img");
+        img.className = "thumb"; img.src = dataUrl; img.alt = "";
+        ph.parentNode.replaceChild(img, ph);
+      } else {
+        ph.className = "thumb thumb-empty";
+        ph.removeAttribute("data-thumb-key");
+      }
+    });
+  }
+
   // Group instances: Component (set) → Variant → instances.
   function groupInstances(rows) {
     var byComp = {};
@@ -285,10 +430,12 @@
       if (!byComp[ck]) {
         byComp[ck] = { key: ck, name: r.componentName, origin: r.origin, library: r.libraryName,
                        hasMaster: false, hasInstance: false,
-                       count: 0, variants: {}, variantOrder: [] };
+                       count: 0, variants: {}, variantOrder: [], sampleIds: [] };
         order.push(ck);
       }
       var g = byComp[ck];
+      // Keep up to 3 candidate node ids for the preview (some may fail to export).
+      if (g.sampleIds.length < 3 && r.nodeId) g.sampleIds.push(r.nodeId);
       g.count++;
       if (r.isMaster) g.hasMaster = true; else g.hasInstance = true;
       // library/origin: prefer a definitive library origin if any instance has it
@@ -395,7 +542,7 @@
         var only = g.variants[g.variantOrder[0]].items[0];
         html.push(
           '<tr class="grp leaf focusable" data-node-id="' + esc(only.nodeId) + '" title="Click to focus on canvas">' +
-          '<td><span class="tw" style="visibility:hidden">▶</span> <b>' + esc(g.name) + '</b>' + masterBadge(g) +
+          '<td class="namecell"><span class="tw" style="visibility:hidden">▶</span>' + thumbHtml(g) + '<b>' + esc(g.name) + '</b>' + masterBadge(g) +
           (only.visible ? "" : ' <span class="hiddenmark" title="hidden">◌</span>') + '</td>' +
           '<td>' + sourceHtml(g) + '</td>' +
           '<td><b>1</b></td>' +
@@ -406,7 +553,7 @@
 
       html.push(
         '<tr class="grp" data-toggle="' + gid + '">' +
-        '<td><span class="tw">▶</span> <b>' + esc(g.name) + '</b>' + masterBadge(g) + '</td>' +
+        '<td class="namecell"><span class="tw">▶</span>' + thumbHtml(g) + '<b>' + esc(g.name) + '</b>' + masterBadge(g) + '</td>' +
         '<td>' + sourceHtml(g) + '</td>' +
         '<td><b>' + g.count + '</b></td>' +
         '<td></td></tr>'
@@ -450,8 +597,7 @@
     var q = searchQuery.toLowerCase();
     var pool = res.instances.filter(function (r) {
       if (!showHidden && !r.visible) return false;
-      if (originFilterVal && r.origin !== originFilterVal) return false;
-      if (libFilterVal && (r.libraryName || "") !== libFilterVal) return false;
+      if (!libMatches(r)) return false;
       return true; // search handled at root level below
     });
 
@@ -514,7 +660,7 @@
   // Dispatcher: choose flat vs tree.
   function renderList(res) {
     if (viewMode === "tree") renderTree(res);
-    else renderInstances(visibleInstances(res));
+    else { renderInstances(visibleInstances(res)); wireThumbs(); }
   }
 
   // Expand/collapse for grouped tree (delegated).
@@ -562,8 +708,22 @@
   }
   el("showHidden").addEventListener("change", function () { showHidden = el("showHidden").checked; rerenderScope(); });
   el("showNested").addEventListener("change", function () { showNested = el("showNested").checked; rerenderScope(); });
-  el("originFilter").addEventListener("change", function () { originFilterVal = el("originFilter").value; rerender(); });
-  el("libFilter").addEventListener("change", function () { libFilterVal = el("libFilter").value; rerender(); });
+
+  // Library multi-select: button toggles the checkbox menu; outside-click closes.
+  el("libFilterBtn").onclick = function (ev) {
+    ev.stopPropagation();
+    var m = el("libFilterMenu");
+    m.style.display = m.style.display === "none" ? "block" : "none";
+  };
+  document.addEventListener("click", function (ev) {
+    if (!el("libFilterWrap").contains(ev.target)) el("libFilterMenu").style.display = "none";
+  });
+  function updateLibBtnLabel() {
+    var n = libFilterVals.length;
+    el("libFilterBtn").textContent =
+      n === 0 ? "All sources" : n === 1 ? libFilterVals[0] : n + " sources";
+    el("libFilterBtn").title = n > 1 ? libFilterVals.join(", ") : "Filter by source";
+  }
   el("viewMode").addEventListener("change", function () {
     viewMode = el("viewMode").value;
     // Nested toggle is irrelevant in tree mode (the tree itself is the nesting).
@@ -593,8 +753,7 @@
     return res.instances.filter(function (r) {
       if (!showHidden && !r.visible) return false;
       if (!showNested && r.nestedInsideInstance) return false;
-      if (originFilterVal && r.origin !== originFilterVal) return false;
-      if (libFilterVal && (r.libraryName || "") !== libFilterVal) return false;
+      if (!libMatches(r)) return false;
       if (q && r.componentName.toLowerCase().indexOf(q) === -1) return false;
       return true;
     });
@@ -611,17 +770,52 @@
   }
 
   function populateLibFilter(res) {
-    var sel = el("libFilter");
+    // Every source present in scope: real library names + local + unresolved.
+    // The library name is the origin fact; local/unresolved are just two more
+    // entries in the same list.
     var names = {};
-    scopedInstances(res).forEach(function (r) {
-      if (r.origin === "library" && r.libraryName) names[r.libraryName] = 1;
+    scopedInstances(res).forEach(function (r) { names[recSource(r)] = 1; });
+    // Library names A→Z first, then local, then unresolved (pinned at the end).
+    var pinned = { "local": 1, "unresolved": 2 };
+    var list = Object.keys(names).sort(function (a, b) {
+      var pa = pinned[a] || 0, pb = pinned[b] || 0;
+      if (pa !== pb) return pa - pb;             // non-pinned (0) before local/unresolved
+      return a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0;
     });
-    var list = Object.keys(names).sort();
-    var cur = libFilterVal;
-    sel.innerHTML = '<option value="">All libraries</option>' +
-      list.map(function (n) { return '<option value="' + esc(n) + '">' + esc(n) + '</option>'; }).join("");
-    // keep selection if still valid
-    if (cur && names[cur]) sel.value = cur; else { libFilterVal = ""; sel.value = ""; }
+    // Drop any selected entries that left scope (new scan / toggle change),
+    // so the filter never silently hides everything.
+    libFilterVals = libFilterVals.filter(function (n) { return names[n]; });
+
+    var menu = el("libFilterMenu");
+    if (!list.length) {
+      menu.innerHTML = '<div style="padding:6px 8px;color:var(--muted)">No sources</div>';
+      updateLibBtnLabel();
+      return;
+    }
+    var clear = '<button type="button" class="ms-clear" id="libClear">Clear selection</button>';
+    var rows = list.map(function (n) {
+      var checked = libFilterVals.indexOf(n) !== -1 ? " checked" : "";
+      return '<label><input type="checkbox" value="' + esc(n) + '"' + checked + ' /> ' + esc(n) + '</label>';
+    }).join("");
+    menu.innerHTML = clear + rows;
+
+    menu.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+      cb.addEventListener("change", function () {
+        var name = cb.value;
+        if (cb.checked) { if (libFilterVals.indexOf(name) === -1) libFilterVals.push(name); }
+        else { libFilterVals = libFilterVals.filter(function (x) { return x !== name; }); }
+        updateLibBtnLabel();
+        rerender();
+      });
+    });
+    var cl = el("libClear");
+    if (cl) cl.onclick = function () {
+      libFilterVals = [];
+      menu.querySelectorAll('input[type="checkbox"]').forEach(function (cb) { cb.checked = false; });
+      updateLibBtnLabel();
+      rerender();
+    };
+    updateLibBtnLabel();
   }
 
   function updateFilterCount(res) {
@@ -667,35 +861,16 @@
     el("summary").innerHTML = line1 + line2;
   }
 
-  // ---- exports ---- (respect the "include hidden" toggle so export matches screen)
-  function instanceRows(res) {
-    return visibleInstances(res).map(function (r) {
-      return {
-        Component: r.componentName,
-        ComponentKey: r.componentKey || "",
-        Variant: r.variant || "",
-        MasterKey: r.masterKey || "",
-        Kind: r.isMaster ? "master" : "instance",
-        Source: r.origin === "library" ? (r.libraryName || "(unknown library)") : (r.origin === "local" ? "local" : "unresolved"),
-        Origin: r.origin,
-        Library: r.libraryName || "",
-        LibraryKey: r.libraryKey || "",
-        EffectivelyVisible: r.visible ? "yes" : "no",
-        DirectlyVisible: r.directlyVisible ? "yes" : "no",
-        NestedInsideInstance: r.nestedInsideInstance ? "yes" : "no",
-        NestedInsideLibraryInstance: r.nestedInsideLibraryInstance ? "yes" : "no",
-        LibraryInheritedFromParent: r.inheritedFromParent ? "yes" : "no",
-        InSwapSlot: r.inSlot ? "yes" : "no",
-        Depth: r.depth,
-        Page: r.page,
-        Path: r.path,
-        File: res.fileName
-      };
-    });
-  }
-  function detachRows(res) {
-    return res.detaches.map(function (r) {
-      return { Layer: r.layerName, MatchedComponent: r.matchedComponentName, Page: r.page, Path: r.path, File: res.fileName };
+  // ---- exports ---- aggregated: one row per component (set), with its source
+  // and total instance count. Respects the on-screen filters AND the current
+  // table sort (same sortKey/sortDir applied via sortGroups), so the export
+  // matches exactly what you see.
+  function componentRows(res) {
+    var groups = groupInstances(visibleInstances(res));
+    sortGroups(groups); // uses current sortKey / sortDir
+    return groups.map(function (g) {
+      // Column order: Component · Count · Library.
+      return { Component: g.name, Count: g.count, Library: sourceLabel(g) };
     });
   }
 
@@ -717,29 +892,175 @@
     setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
   }
 
-  function safeFile(res) { return (res.fileName || "audit").replace(/[^\w.-]+/g, "_"); }
+  // File name carries the project/file name: <project>__component-audit.{csv,xlsx}
+  // Sanitize for a download filename. Keep letters of ANY script (Cyrillic etc.)
+  // and digits — \w is ASCII-only, which turned "Переезд" into "_______".
+  // Only strip characters that are actually unsafe in a filename.
+  function safeFile(res) {
+    var name = (res.fileName || "audit");
+    // Replace path separators / reserved chars with a space, collapse to _.
+    name = name.replace(/[\/\\:*?"<>|\- ]+/g, " ");
+    try {
+      // Drop anything that isn't a letter (any script), number, space, . or -.
+      name = name.replace(/[^\p{L}\p{N} .\-]+/gu, "");
+    } catch (e) {
+      /* very old engine without \p{L}: fall back, keep as-is after the strip above */
+    }
+    name = name.replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^[_.-]+|[_.-]+$/g, "");
+    return name || "audit";
+  }
+
+  // ---- self-contained .xlsx writer (no CDN, no library) ----
+  // A .xlsx is a ZIP of XML parts. We only need one sheet of flat string rows,
+  // so we build minimal OOXML and pack it with a tiny STORE-only ZIP writer.
+  var CRC_TABLE = (function () {
+    var t = [];
+    for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+    return t;
+  })();
+  function crc32(bytes) {
+    var c = 0xFFFFFFFF;
+    for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function utf8(str) {
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(str);
+    var bytes = [], i, ci;
+    for (i = 0; i < str.length; i++) {
+      ci = str.charCodeAt(i);
+      if (ci < 0x80) bytes.push(ci);
+      else if (ci < 0x800) bytes.push(0xC0 | (ci >> 6), 0x80 | (ci & 0x3F));
+      else bytes.push(0xE0 | (ci >> 12), 0x80 | ((ci >> 6) & 0x3F), 0x80 | (ci & 0x3F));
+    }
+    return new Uint8Array(bytes);
+  }
+  function zipStore(files) {
+    // files: [{ name, data(Uint8Array) }] → Blob (STORE, no compression)
+    var chunks = [], central = [], offset = 0;
+    var pushU16 = function (a, v) { a.push(v & 0xFF, (v >>> 8) & 0xFF); };
+    var pushU32 = function (a, v) { a.push(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF); };
+    files.forEach(function (f) {
+      var nameBytes = utf8(f.name), crc = crc32(f.data), local = [];
+      pushU32(local, 0x04034b50); pushU16(local, 20); pushU16(local, 0); pushU16(local, 0);
+      pushU16(local, 0); pushU16(local, 0x21); pushU32(local, crc);
+      pushU32(local, f.data.length); pushU32(local, f.data.length);
+      pushU16(local, nameBytes.length); pushU16(local, 0);
+      var header = new Uint8Array(local);
+      chunks.push(header, nameBytes, f.data);
+      pushU32(central, 0x02014b50); pushU16(central, 20); pushU16(central, 20); pushU16(central, 0);
+      pushU16(central, 0); pushU16(central, 0); pushU16(central, 0x21); pushU32(central, crc);
+      pushU32(central, f.data.length); pushU32(central, f.data.length);
+      pushU16(central, nameBytes.length); pushU16(central, 0); pushU16(central, 0);
+      pushU16(central, 0); pushU16(central, 0); pushU32(central, 0); pushU32(central, offset);
+      for (var i = 0; i < nameBytes.length; i++) central.push(nameBytes[i]);
+      offset += header.length + nameBytes.length + f.data.length;
+    });
+    var centralBytes = new Uint8Array(central), end = [];
+    pushU32(end, 0x06054b50); pushU16(end, 0); pushU16(end, 0);
+    pushU16(end, files.length); pushU16(end, files.length);
+    pushU32(end, centralBytes.length); pushU32(end, offset); pushU16(end, 0);
+    chunks.push(centralBytes, new Uint8Array(end));
+    return new Blob(chunks, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  }
+  function xmlEsc(v) {
+    return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  }
+  function colName(i) {
+    var s = ""; i++;
+    while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); }
+    return s;
+  }
+  // Column widths sized to content: for each column, the widest of its header
+  // and all its values (in Excel character units), clamped to a sane range.
+  function colWidths(cols, rows) {
+    return cols.map(function (c) {
+      var max = String(c).length;
+      rows.forEach(function (row) {
+        var len = String(row[c] == null ? "" : row[c]).length;
+        if (len > max) max = len;
+      });
+      return Math.min(80, Math.max(8, max + 2)); // +2 padding, 8..80 range
+    });
+  }
+  function sheetXml(rows) {
+    var cols = rows.length ? Object.keys(rows[0]) : [];
+    var widths = colWidths(cols, rows);
+    // s="1" = the grey header style defined in styles.xml.
+    var cell = function (r, c, val, style) {
+      return '<c r="' + colName(c) + r + '"' + (style ? ' s="' + style + '"' : '') +
+        ' t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(val) + '</t></is></c>';
+    };
+    var colsXml = widths.length
+      ? '<cols>' + widths.map(function (w, i) {
+          return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>';
+        }).join("") + '</cols>'
+      : '';
+    var lines = ['<row r="1">' + cols.map(function (c, ci) { return cell(1, ci, c, 1); }).join("") + '</row>'];
+    rows.forEach(function (row, ri) {
+      var r = ri + 2;
+      lines.push('<row r="' + r + '">' + cols.map(function (c, ci) { return cell(r, ci, row[c]); }).join("") + '</row>');
+    });
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      colsXml + '<sheetData>' + lines.join("") + '</sheetData></worksheet>';
+  }
+  // Minimal styles.xml: style index 1 = bold text on a light-grey fill (the
+  // header). Index 0 is the required default.
+  var STYLES_XML =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>' +
+    '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="3"><fill><patternFill patternType="none"/></fill>' +
+    '<fill><patternFill patternType="gray125"/></fill>' +
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFECECEC"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+    '<borders count="1"><border/></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="2">' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' +
+    '</cellXfs></styleSheet>';
+  function buildXlsx(rows) {
+    var parts = [
+      { name: "[Content_Types].xml", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+        '<Default Extension="xml" ContentType="application/xml"/>' +
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+        '</Types>' },
+      { name: "_rels/.rels", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+        '</Relationships>' },
+      { name: "xl/workbook.xml", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+        '<sheets><sheet name="Components" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+      { name: "xl/_rels/workbook.xml.rels", xml:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+        '</Relationships>' },
+      { name: "xl/styles.xml", xml: STYLES_XML },
+      { name: "xl/worksheets/sheet1.xml", xml: sheetXml(rows) }
+    ];
+    return zipStore(parts.map(function (p) { return { name: p.name, data: utf8(p.xml) }; }));
+  }
 
   el("csvBtn").onclick = function () {
     if (!lastResult) return;
-    var base = safeFile(lastResult);
-    download(base + "__instances.csv", toCSV(instanceRows(lastResult)), "text/csv");
-    if (lastResult.detaches.length) {
-      setTimeout(function () { download(base + "__detach.csv", toCSV(detachRows(lastResult)), "text/csv"); }, 200);
-    }
+    download(safeFile(lastResult) + "__component-audit.csv", toCSV(componentRows(lastResult)), "text/csv");
   };
 
   el("xlsxBtn").onclick = function () {
     if (!lastResult) return;
-    if (typeof XLSX === "undefined") {
-      alert("XLSX library not available (CDN blocked). Falling back to CSV.");
-      el("csvBtn").click();
-      return;
-    }
-    var wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(instanceRows(lastResult)), "Instances");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detachRows(lastResult)), "Detach");
-    var wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    download(safeFile(lastResult) + "__audit.xlsx", new Blob([wbout], { type: "application/octet-stream" }));
+    download(safeFile(lastResult) + "__component-audit.xlsx", buildXlsx(componentRows(lastResult)));
   };
 
   // ---- messages from sandbox ----
@@ -747,12 +1068,15 @@
     var msg = event.data.pluginMessage;
     if (!msg) return;
     if (msg.type === "progress") {
-      var pct = msg.total ? Math.round((msg.done / msg.total) * 100) : 0;
-      el("progBar").style.width = pct + "%";
-      el("progPhase").textContent = msg.phase + "  —  " + pct + "%";
-      el("progText").textContent = msg.detail || (msg.done + " / " + msg.total);
+      // Phase line = phase only. Numbers live in the counters row. Never mix
+      // free-text detail in — that was the flickering "N instances found".
+      el("progPhase").textContent = msg.phase;
+      renderCounters(msg.counters);
     } else if (msg.type === "warn") {
-      el("progText").textContent = "⚠ " + msg.message;
+      el("progPhase").textContent = "⚠ " + msg.message;
+    } else if (msg.type === "thumbnailResult") {
+      thumbCache[msg.key] = msg.dataUrl || null; // null = tried, none
+      applyThumb(msg.key, msg.dataUrl);
     } else if (msg.type === "focusResult") {
       if (!msg.ok) {
         var sel = el("instTable").querySelector("tr.selected") || el("detachTable").querySelector("tr.selected");
@@ -764,7 +1088,7 @@
     } else if (msg.type === "result") {
       setScanning(false);
       lastResult = msg;
-      el("fileName").textContent = (msg.buildId ? "[" + msg.buildId + "] " : "[OLD BUILD] ") + (msg.fileName || "");
+      el("fileName").textContent = msg.fileName || "";
       populateLibFilter(msg);
       summarize(msg);
       renderList(msg);

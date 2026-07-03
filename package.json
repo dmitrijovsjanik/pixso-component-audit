@@ -1,7 +1,7 @@
 {
   "name": "pixso-component-audit",
   "version": "0.1.0",
-  "description": "Audit design-system component usage across a Pixso file — flat registry, nesting analysis, detach heuristic, CSV/xlsx export.",
+  "description": "Audit design-system component usage across a Pixso file — flat registry, nesting analysis, detach heuristic, CSV/XLSX export.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -w -p tsconfig.json"
