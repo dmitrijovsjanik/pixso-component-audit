@@ -64,6 +64,15 @@ interface DetachRecord {
 
 // ---------- helpers ----------
 
+// Safe children accessor. Some nodes report `"children" in node` true but their
+// .children is momentarily undefined (unloaded page, detached/proxy node). A raw
+// `for..of` over that throws "Symbol.iterator of undefined" and aborts the whole
+// scan — so always go through this.
+function kidsOf(node: any): readonly SceneNode[] {
+  const c = node && node.children;
+  return c && typeof c.length === "number" ? c : [];
+}
+
 // Lazy path: instead of building a string[] for every one of the ~285k nodes,
 // the walk carries an immutable linked list of ancestor names. We only
 // materialize a " / "-joined string for the ~24k nodes we actually record, by
@@ -337,7 +346,13 @@ async function runScan() {
     pixso.ui.postMessage({ type: "warn", message: "loadAllPagesAsync failed — scanning only loaded pages." });
   }
 
-  const pages = ((pixso.root && pixso.root.children) || [pixso.currentPage]).filter((p) => p.type === "PAGE");
+  const rootKids = (pixso.root && (pixso.root as any).children) || [];
+  const pageSource = rootKids.length ? rootKids : (pixso.currentPage ? [pixso.currentPage] : []);
+  const pages = pageSource.filter((p: any) => p && p.type === "PAGE");
+  if (!pages.length) {
+    pixso.ui.postMessage({ type: "error", message: "No pages to scan (file not loaded yet?). Try reopening the plugin." });
+    return;
+  }
   const currentFileKey = (pixso as any).fileKey || null;
 
   // ===== PHASE 1: walk tree, NO network =====
@@ -363,7 +378,7 @@ async function runScan() {
   for (const page of pages) {
     if (abort) break;
     const stack: { node: SceneNode; pathFrame: PathFrame | null; parentVisible: boolean; ancInst: boolean; ancLibInst: boolean; libAncestor: InstanceRecord | null; parentInstId: string | null }[] = [];
-    for (const child of (page as PageNode).children) {
+    for (const child of kidsOf(page)) {
       stack.push({ node: child, pathFrame: null, parentVisible: true, ancInst: false, ancLibInst: false, libAncestor: null, parentInstId: null });
     }
     while (stack.length > 0) {
@@ -501,7 +516,7 @@ async function runScan() {
           parent: pathFrame,
           depth: (pathFrame ? pathFrame.depth : 0) + 1,
         };
-        for (const kid of (node as ChildrenMixin).children) {
+        for (const kid of kidsOf(node)) {
           stack.push({ node: kid, pathFrame: childFrame, parentVisible: effectivelyVisible, ancInst: childAncInst, ancLibInst: childAncLibInst, libAncestor: childLibAncestor, parentInstId: childParentInstId });
         }
       }
@@ -642,7 +657,7 @@ async function runScan() {
     for (const page of pages) {
       if (abort) break;
       const stack: { node: SceneNode; pathFrame: PathFrame | null }[] = [];
-      for (const child of (page as PageNode).children) stack.push({ node: child, pathFrame: null });
+      for (const child of kidsOf(page)) stack.push({ node: child, pathFrame: null });
       while (stack.length > 0) {
         if (abort) break;
         const { node, pathFrame } = stack.pop()!;
@@ -663,7 +678,7 @@ async function runScan() {
             parent: pathFrame,
             depth: (pathFrame ? pathFrame.depth : 0) + 1,
           };
-          for (const kid of (node as ChildrenMixin).children) stack.push({ node: kid, pathFrame: childFrame });
+          for (const kid of kidsOf(node)) stack.push({ node: kid, pathFrame: childFrame });
         }
         // Keep the UI alive during this ~285k-node pass.
         if (scanned % CHUNK_SIZE === 0) {
@@ -698,7 +713,7 @@ async function runScan() {
   pixso.ui.postMessage({
     type: "result",
     fileName,
-    buildId: "BUILD-vanilla-progress-v2",
+    buildId: "BUILD-safe-children-v3",
     instances,
     detaches,
     aborted: abort,
