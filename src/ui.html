@@ -75,6 +75,15 @@
   tr.var { cursor: pointer; }
   tr.var:hover td { background: #f8fafc; }
   .tw { display: inline-block; width: 12px; color: var(--muted); font-size: 9px; }
+  .namecell > * { vertical-align: middle; }
+  .thumb {
+    display: inline-block; width: 20px; height: 20px; margin: 0 6px 0 2px;
+    border: 1px solid var(--border); border-radius: 3px; background: #fff;
+    object-fit: contain; vertical-align: middle;
+  }
+  .thumb-ph, .thumb-empty { background: #f3f4f6; }
+  .thumb-ph { background-image: linear-gradient(90deg,#f3f4f6,#e9eaed,#f3f4f6); background-size: 200% 100%; animation: thumbshimmer 1.2s linear infinite; }
+  @keyframes thumbshimmer { to { background-position: -200% 0; } }
   .hiddenmark { color: #9ca3af; }
   tr.leaf td:first-child { color: #374151; }
   .toggle-inline { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; color: var(--fg); }
@@ -229,6 +238,8 @@
     el("summary").style.display = on ? "none" : "block";
     applyViews(); // hide results while scanning; restore the active tab after
     if (on) {
+      // New scan → previews from the previous file are stale.
+      thumbCache = {}; thumbRequested = {};
       el("progPhase").textContent = "Starting…";
       resetCounters();
       el("progElapsed").textContent = "0s";
@@ -354,6 +365,62 @@
     return g.hasMaster ? ' <span class="chip master">master</span>' : "";
   }
 
+  // ---- lazy component previews ----
+  // Cache data URLs by component key. null = tried and failed (show nothing).
+  var thumbCache = {};
+  // Small preview <img> inside the name cell. If cached, render it directly;
+  // otherwise render a placeholder the IntersectionObserver will fill in when
+  // the row scrolls into view (so we only export what the user actually sees).
+  function thumbHtml(g) {
+    var cached = thumbCache[g.key];
+    if (cached) return '<img class="thumb" src="' + esc(cached) + '" alt="" />';
+    if (cached === null) return '<span class="thumb thumb-empty"></span>'; // tried, none
+    return '<span class="thumb thumb-ph" data-thumb-key="' + esc(g.key) +
+           '" data-thumb-nodes="' + esc((g.sampleIds || []).join(",")) + '"></span>';
+  }
+
+  // Requests we've already sent this session (avoid asking twice).
+  var thumbRequested = {};
+  // IntersectionObserver: when a placeholder scrolls into view, ask the sandbox
+  // to export that component's preview. Only visible rows trigger work.
+  var thumbObserver = ("IntersectionObserver" in window) ? new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      var elp = en.target;
+      thumbObserver.unobserve(elp);
+      var key = elp.getAttribute("data-thumb-key");
+      if (!key || thumbRequested[key] || thumbCache[key] !== undefined) return;
+      thumbRequested[key] = true;
+      var nodes = (elp.getAttribute("data-thumb-nodes") || "").split(",").filter(Boolean);
+      post({ type: "thumbnail", key: key, nodeIds: nodes });
+    });
+  }, { root: null, rootMargin: "80px" }) : null;
+
+  // Observe all current placeholders. Call after each list render.
+  function wireThumbs() {
+    if (!thumbObserver) return;
+    el("instTable").querySelectorAll(".thumb-ph").forEach(function (ph) {
+      var key = ph.getAttribute("data-thumb-key");
+      if (thumbCache[key] !== undefined) return; // already resolved
+      thumbObserver.observe(ph);
+    });
+  }
+
+  // Apply a resolved preview to every placeholder/img for that key on screen.
+  function applyThumb(key, dataUrl) {
+    var sel = '[data-thumb-key="' + (key || "").replace(/"/g, "") + '"]';
+    el("instTable").querySelectorAll(sel).forEach(function (ph) {
+      if (dataUrl) {
+        var img = document.createElement("img");
+        img.className = "thumb"; img.src = dataUrl; img.alt = "";
+        ph.parentNode.replaceChild(img, ph);
+      } else {
+        ph.className = "thumb thumb-empty";
+        ph.removeAttribute("data-thumb-key");
+      }
+    });
+  }
+
   // Group instances: Component (set) → Variant → instances.
   function groupInstances(rows) {
     var byComp = {};
@@ -363,10 +430,12 @@
       if (!byComp[ck]) {
         byComp[ck] = { key: ck, name: r.componentName, origin: r.origin, library: r.libraryName,
                        hasMaster: false, hasInstance: false,
-                       count: 0, variants: {}, variantOrder: [] };
+                       count: 0, variants: {}, variantOrder: [], sampleIds: [] };
         order.push(ck);
       }
       var g = byComp[ck];
+      // Keep up to 3 candidate node ids for the preview (some may fail to export).
+      if (g.sampleIds.length < 3 && r.nodeId) g.sampleIds.push(r.nodeId);
       g.count++;
       if (r.isMaster) g.hasMaster = true; else g.hasInstance = true;
       // library/origin: prefer a definitive library origin if any instance has it
@@ -473,7 +542,7 @@
         var only = g.variants[g.variantOrder[0]].items[0];
         html.push(
           '<tr class="grp leaf focusable" data-node-id="' + esc(only.nodeId) + '" title="Click to focus on canvas">' +
-          '<td><span class="tw" style="visibility:hidden">▶</span> <b>' + esc(g.name) + '</b>' + masterBadge(g) +
+          '<td class="namecell"><span class="tw" style="visibility:hidden">▶</span>' + thumbHtml(g) + '<b>' + esc(g.name) + '</b>' + masterBadge(g) +
           (only.visible ? "" : ' <span class="hiddenmark" title="hidden">◌</span>') + '</td>' +
           '<td>' + sourceHtml(g) + '</td>' +
           '<td><b>1</b></td>' +
@@ -484,7 +553,7 @@
 
       html.push(
         '<tr class="grp" data-toggle="' + gid + '">' +
-        '<td><span class="tw">▶</span> <b>' + esc(g.name) + '</b>' + masterBadge(g) + '</td>' +
+        '<td class="namecell"><span class="tw">▶</span>' + thumbHtml(g) + '<b>' + esc(g.name) + '</b>' + masterBadge(g) + '</td>' +
         '<td>' + sourceHtml(g) + '</td>' +
         '<td><b>' + g.count + '</b></td>' +
         '<td></td></tr>'
@@ -591,7 +660,7 @@
   // Dispatcher: choose flat vs tree.
   function renderList(res) {
     if (viewMode === "tree") renderTree(res);
-    else renderInstances(visibleInstances(res));
+    else { renderInstances(visibleInstances(res)); wireThumbs(); }
   }
 
   // Expand/collapse for grouped tree (delegated).
@@ -990,6 +1059,9 @@
       renderCounters(msg.counters);
     } else if (msg.type === "warn") {
       el("progPhase").textContent = "⚠ " + msg.message;
+    } else if (msg.type === "thumbnailResult") {
+      thumbCache[msg.key] = msg.dataUrl || null; // null = tried, none
+      applyThumb(msg.key, msg.dataUrl);
     } else if (msg.type === "focusResult") {
       if (!msg.ok) {
         var sel = el("instTable").querySelector("tr.selected") || el("detachTable").querySelector("tr.selected");

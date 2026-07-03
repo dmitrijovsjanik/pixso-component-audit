@@ -713,7 +713,7 @@ async function runScan() {
   pixso.ui.postMessage({
     type: "result",
     fileName,
-    buildId: "BUILD-safe-children-v3",
+    buildId: "BUILD-previews-v4",
     instances,
     detaches,
     aborted: abort,
@@ -739,10 +739,69 @@ pixso.ui.onmessage = (msg: any) => {
     abort = true;
   } else if (msg.type === "focus") {
     focusNode(msg.nodeId);
+  } else if (msg.type === "thumbnail") {
+    // msg: { key, nodeIds: string[] } — export a small preview of the first
+    // node that renders. The UI keys previews by component key.
+    exportThumbnail(msg.key, msg.nodeIds || []);
   } else if (msg.type === "close") {
     pixso.closePlugin();
   }
 };
+
+// Cache exported previews by component key so re-requests are instant.
+const thumbnailCache = new Map<string, string>();
+
+async function exportThumbnail(key: string, nodeIds: string[]): Promise<void> {
+  const cached = thumbnailCache.get(key);
+  if (cached) {
+    pixso.ui.postMessage({ type: "thumbnailResult", key, dataUrl: cached });
+    return;
+  }
+  // Try each candidate node until one exports (a deleted/odd node is skipped).
+  for (const id of nodeIds) {
+    try {
+      const node = pixso.getNodeById(id) as any;
+      if (!node || typeof node.exportAsync !== "function") continue;
+      const bytes: Uint8Array = await node.exportAsync({
+        format: "PNG",
+        constraint: { type: "WIDTH", value: 96 }, // small; UI shows it ~28px
+      });
+      if (!bytes || !bytes.length) continue;
+      const b64 = (pixso as any).base64Encode
+        ? (pixso as any).base64Encode(bytes)
+        : bytesToBase64(bytes);
+      const dataUrl = "data:image/png;base64," + b64;
+      thumbnailCache.set(key, dataUrl);
+      pixso.ui.postMessage({ type: "thumbnailResult", key, dataUrl });
+      return;
+    } catch (e) {
+      /* try the next candidate */
+    }
+  }
+  // Nothing rendered — tell the UI so it can stop showing a spinner.
+  pixso.ui.postMessage({ type: "thumbnailResult", key, dataUrl: null });
+}
+
+// Fallback base64 (used only if pixso.base64Encode is unavailable).
+function bytesToBase64(bytes: Uint8Array): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+  let i = 0;
+  for (; i + 2 < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63] + chars[(n >> 6) & 63] + chars[n & 63];
+  }
+  if (i < bytes.length) {
+    const rem = bytes.length - i;
+    const b0 = bytes[i];
+    const b1 = rem > 1 ? bytes[i + 1] : 0;
+    const n = (b0 << 16) | (b1 << 8);
+    out += chars[(n >> 18) & 63] + chars[(n >> 12) & 63];
+    out += rem > 1 ? chars[(n >> 6) & 63] : "=";
+    out += "=";
+  }
+  return out;
+}
 
 // Select a node and zoom the viewport to it, switching page if needed.
 function focusNode(nodeId: string) {
