@@ -1,0 +1,54 @@
+name: Build and release
+
+# Runs when you push a version tag like v1.0.0, and builds a ready-to-install
+# package so colleagues don't need Node or a build step.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build sandbox (dist/main.js)
+        run: npm run build
+
+      - name: Package the Pixso plugin
+        run: |
+          mkdir -p package/ds-component-audit
+          cp manifest.json package/ds-component-audit/
+          mkdir -p package/ds-component-audit/dist package/ds-component-audit/src
+          cp dist/main.js package/ds-component-audit/dist/
+          cp src/ui.html package/ds-component-audit/src/
+          cd package && zip -r ../ds-component-audit-plugin.zip ds-component-audit
+          cd ..
+
+      - name: Package the merge tool
+        run: cp merge-tool/index.html merge-tool.html
+
+      - name: Create GitHub Release with assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ds-component-audit-plugin.zip
+            merge-tool.html
+          body: |
+            ## Install the plugin
+            1. Download **ds-component-audit-plugin.zip** and unzip it.
+            2. In Pixso: Plugins → Development → Import from manifest → pick `manifest.json` inside the unzipped folder.
+
+            ## Merge tool
+            Download **merge-tool.html** and open it in a browser — no install needed.
