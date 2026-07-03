@@ -797,7 +797,8 @@
       return an < bn ? -1 : an > bn ? 1 : 0;                  // then A→Z
     });
     return groups.map(function (g) {
-      return { Component: g.name, Library: sourceLabel(g), Count: g.count };
+      // Column order: Component · Count · Library.
+      return { Component: g.name, Count: g.count, Library: sourceLabel(g) };
     });
   }
 
@@ -883,20 +884,56 @@
     while (i > 0) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); }
     return s;
   }
+  // Column widths sized to content: for each column, the widest of its header
+  // and all its values (in Excel character units), clamped to a sane range.
+  function colWidths(cols, rows) {
+    return cols.map(function (c) {
+      var max = String(c).length;
+      rows.forEach(function (row) {
+        var len = String(row[c] == null ? "" : row[c]).length;
+        if (len > max) max = len;
+      });
+      return Math.min(80, Math.max(8, max + 2)); // +2 padding, 8..80 range
+    });
+  }
   function sheetXml(rows) {
     var cols = rows.length ? Object.keys(rows[0]) : [];
-    var cell = function (r, c, val) {
-      return '<c r="' + colName(c) + r + '" t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(val) + '</t></is></c>';
+    var widths = colWidths(cols, rows);
+    // s="1" = the grey header style defined in styles.xml.
+    var cell = function (r, c, val, style) {
+      return '<c r="' + colName(c) + r + '"' + (style ? ' s="' + style + '"' : '') +
+        ' t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(val) + '</t></is></c>';
     };
-    var lines = ['<row r="1">' + cols.map(function (c, ci) { return cell(1, ci, c); }).join("") + '</row>'];
+    var colsXml = widths.length
+      ? '<cols>' + widths.map(function (w, i) {
+          return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>';
+        }).join("") + '</cols>'
+      : '';
+    var lines = ['<row r="1">' + cols.map(function (c, ci) { return cell(1, ci, c, 1); }).join("") + '</row>'];
     rows.forEach(function (row, ri) {
       var r = ri + 2;
       lines.push('<row r="' + r + '">' + cols.map(function (c, ci) { return cell(r, ci, row[c]); }).join("") + '</row>');
     });
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-      '<sheetData>' + lines.join("") + '</sheetData></worksheet>';
+      colsXml + '<sheetData>' + lines.join("") + '</sheetData></worksheet>';
   }
+  // Minimal styles.xml: style index 1 = bold text on a light-grey fill (the
+  // header). Index 0 is the required default.
+  var STYLES_XML =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>' +
+    '<font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="3"><fill><patternFill patternType="none"/></fill>' +
+    '<fill><patternFill patternType="gray125"/></fill>' +
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFECECEC"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+    '<borders count="1"><border/></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="2">' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' +
+    '</cellXfs></styleSheet>';
   function buildXlsx(rows) {
     var parts = [
       { name: "[Content_Types].xml", xml:
@@ -906,6 +943,7 @@
         '<Default Extension="xml" ContentType="application/xml"/>' +
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
         '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
         '</Types>' },
       { name: "_rels/.rels", xml:
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -920,7 +958,9 @@
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
         '</Relationships>' },
+      { name: "xl/styles.xml", xml: STYLES_XML },
       { name: "xl/worksheets/sheet1.xml", xml: sheetXml(rows) }
     ];
     return zipStore(parts.map(function (p) { return { name: p.name, data: utf8(p.xml) }; }));
