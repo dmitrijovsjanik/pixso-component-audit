@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Merge component-audit exports</title>
+<style>
+  :root {
+    --bg:#fff; --fg:#1a1a1a; --muted:#6b7280; --border:#e5e7eb;
+    --accent:#2563eb; --accent-fg:#fff; --danger:#dc2626;
+    --head:#ececec; --drop:#eff6ff; --drop-border:#93c5fd;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    color:var(--fg); background:var(--bg); padding:24px; max-width:900px; margin:0 auto;
+  }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .drop {
+    border:2px dashed var(--border); border-radius:12px; padding:36px 20px; text-align:center;
+    color:var(--muted); transition:.15s; cursor:pointer; background:#fafafa;
+  }
+  .drop.over { border-color:var(--drop-border); background:var(--drop); color:var(--fg); }
+  .drop b { color:var(--fg); }
+  .files { margin:16px 0; display:flex; flex-direction:column; gap:6px; }
+  .file {
+    display:flex; align-items:center; gap:10px; padding:8px 12px;
+    border:1px solid var(--border); border-radius:8px; font-size:12px;
+  }
+  .file .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .file .meta { color:var(--muted); white-space:nowrap; }
+  .file .err { color:var(--danger); }
+  .file .rm { cursor:pointer; color:var(--muted); border:none; background:none; font-size:15px; }
+  .file .rm:hover { color:var(--danger); }
+  .toolbar { display:flex; gap:10px; align-items:center; margin:18px 0; flex-wrap:wrap; }
+  button.btn {
+    font:inherit; padding:8px 16px; border-radius:8px; border:1px solid var(--accent);
+    background:var(--accent); color:var(--accent-fg); cursor:pointer; font-weight:600;
+  }
+  button.btn:disabled { opacity:.45; cursor:default; }
+  button.ghost { background:#fff; color:var(--fg); border-color:var(--border); font-weight:400; }
+  .count { color:var(--muted); margin-left:auto; font-size:12px; }
+  .tablewrap { border:1px solid var(--border); border-radius:8px; overflow:auto; max-height:440px; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th,td { text-align:left; padding:7px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--head); font-weight:600; cursor:pointer; user-select:none; }
+  th .ar { color:var(--muted); font-size:10px; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr:hover td { background:#f8fafc; }
+  .empty { padding:40px; text-align:center; color:var(--muted); }
+  .note { color:var(--muted); font-size:12px; margin-top:14px; }
+  .badge { display:inline-block; background:#eef2ff; color:#4338ca; border-radius:10px; padding:1px 7px; font-size:11px; font-weight:600; }
+</style>
+</head>
+<body>
+  <h1>Merge component-audit exports</h1>
+  <p class="sub">Drop the <b>.xlsx</b> files exported from the DS Component Audit plugin. Rows with the same <b>Component</b> + <b>Library</b> are combined and their counts summed.</p>
+
+  <div id="drop" class="drop">
+    <div><b>Drag &amp; drop .xlsx files here</b> — or click to choose</div>
+    <div style="margin-top:6px;font-size:12px">Multiple files at once is fine.</div>
+    <input id="picker" type="file" accept=".xlsx" multiple hidden />
+  </div>
+
+  <div id="files" class="files"></div>
+
+  <div class="toolbar">
+    <button id="exportBtn" class="btn" disabled>Export merged .xlsx</button>
+    <button id="clearBtn" class="ghost btn" disabled>Clear all</button>
+    <span id="count" class="count"></span>
+  </div>
+
+  <div class="tablewrap">
+    <table id="preview">
+      <thead></thead>
+      <tbody><tr><td class="empty">No files yet. Drop some exports above.</td></tr></tbody>
+    </table>
+  </div>
+
+  <p class="note">Reads the plugin's own uncompressed .xlsx directly (no libraries). Files re-saved through Excel/Sheets may not parse.</p>
+
+<script>
+"use strict";
+
+// ---------------- minimal .xlsx reader (STORE zip + inlineStr sheet) ----------
+// Our plugin writes uncompressed (STORE) zips with inline-string cells and no
+// shared-strings table, so we can read them without an inflate library.
+
+function u16(b,o){ return b[o] | (b[o+1]<<8); }
+function u32(b,o){ return (b[o] | (b[o+1]<<8) | (b[o+2]<<16) | (b[o+3]<<24)) >>> 0; }
+
+// Return { name -> Uint8Array } for all STORE entries in the zip.
+function unzipStore(bytes){
+  var files = {};
+  var i = 0, n = bytes.length;
+  while (i + 4 <= n) {
+    var sig = u32(bytes, i);
+    if (sig !== 0x04034b50) break; // not a local file header → end of entries
+    var method = u16(bytes, i + 8);
+    var compSize = u32(bytes, i + 18);
+    var nameLen = u16(bytes, i + 26);
+    var extraLen = u16(bytes, i + 28);
+    var nameStart = i + 30;
+    var name = new TextDecoder().decode(bytes.subarray(nameStart, nameStart + nameLen));
+    var dataStart = nameStart + nameLen + extraLen;
+    if (method !== 0) throw new Error("compressed entry (not from this plugin)");
+    files[name] = bytes.subarray(dataStart, dataStart + compSize);
+    i = dataStart + compSize;
+  }
+  return files;
+}
+
+function xmlUnescape(s){
+  return s.replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"')
+          .replace(/&apos;/g,"'").replace(/&amp;/g,"&");
+}
+
+// Parse our sheet1.xml → array of row objects keyed by the header row.
+function parseSheet(xml){
+  var rows = [];
+  var rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g, rm;
+  while ((rm = rowRe.exec(xml))) {
+    var cells = [], cm;
+    // inline string cells: <c ...><is><t ...>VALUE</t></is></c>
+    var cellRe = /<c\b[^>]*>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/c>|<c\b[^>]*\/>/g;
+    while ((cm = cellRe.exec(rm[1]))) {
+      cells.push(cm[1] != null ? xmlUnescape(cm[1]) : "");
+    }
+    rows.push(cells);
+  }
+  if (!rows.length) return { headers:[], data:[] };
+  var headers = rows[0];
+  var data = rows.slice(1).map(function(cells){
+    var o = {};
+    headers.forEach(function(h, i){ o[h] = cells[i] != null ? cells[i] : ""; });
+    return o;
+  });
+  return { headers:headers, data:data };
+}
+
+function readXlsx(arrayBuffer){
+  var bytes = new Uint8Array(arrayBuffer);
+  var entries = unzipStore(bytes);
+  var sheet = entries["xl/worksheets/sheet1.xml"];
+  if (!sheet) throw new Error("no worksheet found");
+  var xml = new TextDecoder().decode(sheet);
+  return parseSheet(xml);
+}
+
+// ---------------- merge logic -------------------------------------------------
+// Key by Component + Library; sum Count. Different name OR library = new row.
+
+function mergeRows(allRows){
+  // Nested map component -> library -> entry, so we never build a fragile
+  // string key out of the two names.
+  var byComp = new Map();
+  var order = [];
+  allRows.forEach(function(r){
+    var comp = (r.Component != null ? r.Component : "").trim();
+    var lib  = (r.Library  != null ? r.Library  : "").trim();
+    var cnt  = parseInt(r.Count, 10);
+    if (!comp && !lib) return;
+    if (isNaN(cnt)) cnt = 0;
+    var byLib = byComp.get(comp);
+    if (!byLib) { byLib = new Map(); byComp.set(comp, byLib); }
+    var entry = byLib.get(lib);
+    if (!entry) { entry = { Component:comp, Library:lib, Count:0 }; byLib.set(lib, entry); order.push(entry); }
+    entry.Count += cnt;
+  });
+  return order;
+}
+
+// ---------------- xlsx writer (same self-contained format as the plugin) ------
+
+var CRC_TABLE = (function(){ var t=[]; for(var n=0;n<256;n++){ var c=n; for(var k=0;k<8;k++) c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1); t[n]=c>>>0; } return t; })();
+function crc32(b){ var c=0xFFFFFFFF; for(var i=0;i<b.length;i++) c=CRC_TABLE[(c^b[i])&0xFF]^(c>>>8); return (c^0xFFFFFFFF)>>>0; }
+function utf8(s){ return new TextEncoder().encode(s); }
+function zipStore(files){
+  var chunks=[], central=[], offset=0;
+  var pU16=function(a,v){ a.push(v&0xFF,(v>>>8)&0xFF); };
+  var pU32=function(a,v){ a.push(v&0xFF,(v>>>8)&0xFF,(v>>>16)&0xFF,(v>>>24)&0xFF); };
+  files.forEach(function(f){
+    var nb=utf8(f.name), crc=crc32(f.data), local=[];
+    pU32(local,0x04034b50); pU16(local,20); pU16(local,0); pU16(local,0);
+    pU16(local,0); pU16(local,0x21); pU32(local,crc);
+    pU32(local,f.data.length); pU32(local,f.data.length); pU16(local,nb.length); pU16(local,0);
+    var header=new Uint8Array(local); chunks.push(header,nb,f.data);
+    pU32(central,0x02014b50); pU16(central,20); pU16(central,20); pU16(central,0);
+    pU16(central,0); pU16(central,0); pU16(central,0x21); pU32(central,crc);
+    pU32(central,f.data.length); pU32(central,f.data.length);
+    pU16(central,nb.length); pU16(central,0); pU16(central,0);
+    pU16(central,0); pU16(central,0); pU32(central,0); pU32(central,offset);
+    for(var j=0;j<nb.length;j++) central.push(nb[j]);
+    offset += header.length + nb.length + f.data.length;
+  });
+  var cb=new Uint8Array(central), end=[];
+  pU32(end,0x06054b50); pU16(end,0); pU16(end,0); pU16(end,files.length); pU16(end,files.length);
+  pU32(end,cb.length); pU32(end,offset); pU16(end,0);
+  chunks.push(cb,new Uint8Array(end));
+  return new Blob(chunks,{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+}
+function xmlEsc(v){ return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;"); }
+function colName(i){ var s=""; i++; while(i>0){ var m=(i-1)%26; s=String.fromCharCode(65+m)+s; i=Math.floor((i-1)/26); } return s; }
+function colWidths(cols,rows){
+  return cols.map(function(c){ var max=String(c).length; rows.forEach(function(r){ var l=String(r[c]==null?"":r[c]).length; if(l>max)max=l; }); return Math.min(80,Math.max(8,max+2)); });
+}
+function sheetXml(rows){
+  var cols=rows.length?Object.keys(rows[0]):[];
+  var widths=colWidths(cols,rows);
+  var cell=function(r,c,val,style){ return '<c r="'+colName(c)+r+'"'+(style?' s="'+style+'"':'')+' t="inlineStr"><is><t xml:space="preserve">'+xmlEsc(val)+'</t></is></c>'; };
+  var colsXml=widths.length?('<cols>'+widths.map(function(w,i){ return '<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>'; }).join("")+'</cols>'):'';
+  var lines=['<row r="1">'+cols.map(function(c,ci){ return cell(1,ci,c,1); }).join("")+'</row>'];
+  rows.forEach(function(row,ri){ var r=ri+2; lines.push('<row r="'+r+'">'+cols.map(function(c,ci){ return cell(r,ci,row[c]); }).join("")+'</row>'); });
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+colsXml+'<sheetData>'+lines.join("")+'</sheetData></worksheet>';
+}
+var STYLES_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFECECEC"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>';
+function buildXlsx(rows){
+  var parts=[
+    { name:"[Content_Types].xml", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
+    { name:"_rels/.rels", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+    { name:"xl/workbook.xml", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Components" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+    { name:"xl/_rels/workbook.xml.rels", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+    { name:"xl/styles.xml", xml:STYLES_XML },
+    { name:"xl/worksheets/sheet1.xml", xml:sheetXml(rows) }
+  ];
+  return zipStore(parts.map(function(p){ return { name:p.name, data:utf8(p.xml) }; }));
+}
+function download(name, blob){
+  var url=URL.createObjectURL(blob); var a=document.createElement("a");
+  a.href=url; a.download=name; document.body.appendChild(a); a.click();
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); },100);
+}
+
+// ---------------- UI state & wiring -------------------------------------------
+
+var loaded = []; // { name, rows:[], count, error }
+var sortKey = "Count", sortDir = -1;
+
+var el = function(id){ return document.getElementById(id); };
+
+function fmt(n){ return String(n).replace(/\B(?=(\d{3})+(?!\d))/g," "); }
+
+function merged(){
+  var all = [];
+  loaded.forEach(function(f){ if (f.rows) all = all.concat(f.rows); });
+  var rows = mergeRows(all);
+  rows.sort(function(a,b){
+    var av, bv;
+    if (sortKey === "Count") { av=a.Count; bv=b.Count; }
+    else { av=String(a[sortKey]||"").toLowerCase(); bv=String(b[sortKey]||"").toLowerCase(); }
+    if (av<bv) return -1*sortDir;
+    if (av>bv) return 1*sortDir;
+    var an=a.Component.toLowerCase(), bn=b.Component.toLowerCase();
+    return an<bn?-1:an>bn?1:0;
+  });
+  return rows;
+}
+
+function renderFiles(){
+  var wrap = el("files");
+  if (!loaded.length) { wrap.innerHTML = ""; return; }
+  wrap.innerHTML = loaded.map(function(f, i){
+    var meta = f.error
+      ? '<span class="err">'+f.error+'</span>'
+      : '<span class="meta">'+f.rows.length+' rows</span>';
+    return '<div class="file"><span class="nm">'+xmlEsc(f.name)+'</span>'+meta+
+           '<button class="rm" data-i="'+i+'" title="Remove">×</button></div>';
+  }).join("");
+  wrap.querySelectorAll(".rm").forEach(function(btn){
+    btn.onclick = function(){ loaded.splice(+btn.getAttribute("data-i"),1); renderAll(); };
+  });
+}
+
+function renderPreview(){
+  var rows = merged();
+  var thead = el("preview").querySelector("thead");
+  var tbody = el("preview").querySelector("tbody");
+  var cols = [["Component","Component"],["Count","Count"],["Library","Library"]];
+  function arrow(k){ return sortKey===k ? ('<span class="ar"> '+(sortDir>0?"↑":"↓")+'</span>') : ''; }
+  thead.innerHTML = '<tr>'+cols.map(function(c){
+    var cls = c[0]==="Count" ? ' class="num"' : '';
+    return '<th'+cls+' data-key="'+c[0]+'">'+c[1]+arrow(c[0])+'</th>';
+  }).join("")+'</tr>';
+  thead.querySelectorAll("th").forEach(function(th){
+    th.onclick = function(){
+      var k = th.getAttribute("data-key");
+      if (sortKey===k) sortDir=-sortDir; else { sortKey=k; sortDir=(k==="Count")?-1:1; }
+      renderPreview();
+    };
+  });
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td class="empty" colspan="3">No files yet. Drop some exports above.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(function(r){
+    return '<tr><td>'+xmlEsc(r.Component)+'</td><td class="num">'+fmt(r.Count)+'</td><td>'+xmlEsc(r.Library)+'</td></tr>';
+  }).join("");
+}
+
+function renderAll(){
+  renderFiles();
+  renderPreview();
+  var ok = loaded.some(function(f){ return f.rows && f.rows.length; });
+  el("exportBtn").disabled = !ok;
+  el("clearBtn").disabled = !loaded.length;
+  var files = loaded.length, rows = merged().length;
+  el("count").textContent = files ? (files+' file'+(files>1?'s':'')+' · '+rows+' merged rows') : '';
+}
+
+function addFiles(fileList){
+  var arr = Array.prototype.slice.call(fileList).filter(function(f){ return /\.xlsx$/i.test(f.name); });
+  var pending = arr.length;
+  if (!pending) return;
+  arr.forEach(function(file){
+    var reader = new FileReader();
+    reader.onload = function(){
+      var entry = { name:file.name, rows:null, error:null };
+      try {
+        var res = readXlsx(reader.result);
+        var need = ["Component","Library","Count"];
+        var ok = need.every(function(h){ return res.headers.indexOf(h) !== -1; });
+        if (!ok) throw new Error("not a component-audit export");
+        entry.rows = res.data;
+      } catch(e){
+        entry.error = "couldn't read: "+e.message;
+      }
+      loaded.push(entry);
+      if (--pending === 0) renderAll(); else renderFiles();
+    };
+    reader.onerror = function(){ loaded.push({ name:file.name, rows:null, error:"read failed" }); if(--pending===0) renderAll(); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// drag & drop + picker
+var drop = el("drop"), picker = el("picker");
+drop.onclick = function(){ picker.click(); };
+picker.onchange = function(){ addFiles(picker.files); picker.value=""; };
+["dragenter","dragover"].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add("over"); }); });
+["dragleave","drop"].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove("over"); }); });
+drop.addEventListener("drop", function(e){ if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+
+el("clearBtn").onclick = function(){ loaded = []; renderAll(); };
+el("exportBtn").onclick = function(){
+  var rows = merged();
+  if (!rows.length) return;
+  // Column order matches the plugin: Component · Count · Library.
+  var out = rows.map(function(r){ return { Component:r.Component, Count:r.Count, Library:r.Library }; });
+  download("merged__component-audit.xlsx", buildXlsx(out));
+};
+
+renderAll();
+</script>
+</body>
+</html>
