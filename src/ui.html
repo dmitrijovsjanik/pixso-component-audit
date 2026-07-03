@@ -15,6 +15,12 @@
     margin: 0; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     color: var(--fg); background: var(--bg);
   }
+  /* window resize handles (edges + corner) */
+  .rz { position: fixed; z-index: 1000; }
+  .rz-r  { top: 0; right: 0; width: 6px; height: 100%; cursor: ew-resize; }
+  .rz-b  { left: 0; bottom: 0; height: 6px; width: 100%; cursor: ns-resize; }
+  .rz-br { right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+  body.resizing { user-select: none; cursor: inherit; }
   header {
     padding: 12px 14px; border-bottom: 1px solid var(--border);
     display: flex; align-items: center; gap: 8px;
@@ -72,6 +78,13 @@
   tr.focusable.notfound td { background: #fee2e2; }
   tr.grp { cursor: pointer; background: #fafafa; }
   tr.grp:hover td { background: #f1f5f9; }
+  /* When a top-level group is expanded, keep its header row pinned below the
+     table head while you scroll through its children, so you always see which
+     component you're looking at. */
+  tr.grp.open.sticky-grp td {
+    position: sticky; top: 27px; z-index: 2; background: #eef2f7;
+    box-shadow: 0 1px 0 var(--border);
+  }
   tr.var { cursor: pointer; }
   tr.var:hover td { background: #f8fafc; }
   .tw { display: inline-block; width: 12px; color: var(--muted); font-size: 9px; }
@@ -82,6 +95,7 @@
     object-fit: contain; vertical-align: middle;
   }
   .thumb-ph, .thumb-empty { background: #f3f4f6; }
+  .thumb-hidden { background: #f3f4f6; display: inline-flex; align-items: center; justify-content: center; color: #9ca3af; }
   .thumb-ph { background-image: linear-gradient(90deg,#f3f4f6,#e9eaed,#f3f4f6); background-size: 200% 100%; animation: thumbshimmer 1.2s linear infinite; }
   @keyframes thumbshimmer { to { background-position: -200% 0; } }
   .hiddenmark { color: #9ca3af; }
@@ -140,6 +154,10 @@
 </style>
 </head>
 <body>
+  <div class="rz rz-r"  data-rz="r"></div>
+  <div class="rz rz-b"  data-rz="b"></div>
+  <div class="rz rz-br" data-rz="br"></div>
+
   <header>
     <h1 id="fileName"></h1>
   </header>
@@ -221,6 +239,53 @@
 <script>
   var post = function (m) { parent.postMessage({ pluginMessage: m }, "*"); };
   var lastResult = null;
+
+  // ---- window resize (drag edges/corner) ----
+  // The UI can't set its own size — only the sandbox can via pixso.ui.resize.
+  // We track size in JS (seeded with the initial showUI size) and, while
+  // dragging a handle, send the new size to the sandbox. Requests are coalesced
+  // to one per animation frame so we don't flood the message channel.
+  (function () {
+    var MIN_W = 360, MIN_H = 320, MAX = 2000;
+    var curW = 860, curH = 660;          // must match showUI() in main.ts
+    var startX = 0, startY = 0, startW = 0, startH = 0, dir = "", dragging = false;
+    var pending = false, nextW = curW, nextH = curH;
+
+    function flush() {
+      pending = false;
+      post({ type: "resize", width: nextW, height: nextH });
+    }
+    function onMove(e) {
+      if (!dragging) return;
+      if (dir.indexOf("r") !== -1) {
+        curW = Math.max(MIN_W, Math.min(MAX, startW + (e.clientX - startX)));
+      }
+      if (dir.indexOf("b") !== -1) {
+        curH = Math.max(MIN_H, Math.min(MAX, startH + (e.clientY - startY)));
+      }
+      nextW = Math.round(curW); nextH = Math.round(curH);
+      if (!pending) { pending = true; requestAnimationFrame(flush); }
+    }
+    function onUp() {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove("resizing");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.querySelectorAll(".rz").forEach(function (h) {
+      h.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        dir = h.getAttribute("data-rz");
+        startX = e.clientX; startY = e.clientY; startW = curW; startH = curH;
+        dragging = true;
+        document.body.classList.add("resizing");
+        document.body.style.cursor = getComputedStyle(h).cursor;
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+    });
+  })();
   var showHidden = false;
   var showNested = false;
   var searchQuery = "";
@@ -387,7 +452,17 @@
   // Small preview <img> inside the name cell. If cached, render it directly;
   // otherwise render a placeholder the IntersectionObserver will fill in when
   // the row scrolls into view (so we only export what the user actually sees).
+  // Eye-off glyph shown when a component is hidden (no preview is possible).
+  var EYE_OFF = '<svg class="eyeoff" viewBox="0 0 24 24" width="15" height="15" ' +
+    'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.16 3.19M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9 9 0 0 0 5.4-1.6"/>' +
+    '<path d="M1 1l22 22"/></svg>';
+
   function thumbHtml(g) {
+    // Hidden component → Pixso can't render a preview; show an eye-off icon.
+    if (!g.anyVisible) {
+      return '<span class="thumb thumb-hidden" title="Hidden — no preview">' + EYE_OFF + '</span>';
+    }
     var cached = thumbCache[g.key];
     if (cached) return '<img class="thumb" src="' + esc(cached) + '" alt="" />';
     if (cached === null) return '<span class="thumb thumb-empty"></span>'; // tried, none
@@ -445,13 +520,20 @@
       var ck = r.componentKey || r.componentName;
       if (!byComp[ck]) {
         byComp[ck] = { key: ck, name: r.componentName, origin: r.origin, library: r.libraryName,
-                       hasMaster: false, hasInstance: false,
+                       hasMaster: false, hasInstance: false, anyVisible: false,
                        count: 0, variants: {}, variantOrder: [], sampleIds: [] };
         order.push(ck);
       }
       var g = byComp[ck];
-      // Keep up to 3 candidate node ids for the preview (some may fail to export).
-      if (g.sampleIds.length < 3 && r.nodeId) g.sampleIds.push(r.nodeId);
+      if (r.visible) g.anyVisible = true;
+      // Preview candidates: prefer VISIBLE nodes (Pixso can't render hidden ones).
+      // Keep up to 3 (some may still fail to export).
+      if (r.visible && r.nodeId) {
+        if (g.sampleIds.length < 3) g.sampleIds.push(r.nodeId);
+      } else if (r.nodeId && g.sampleIds.length === 0) {
+        // remember one hidden fallback only if we have nothing visible yet
+        g._hiddenSample = g._hiddenSample || r.nodeId;
+      }
       g.count++;
       if (r.isMaster) g.hasMaster = true; else g.hasInstance = true;
       // library/origin: prefer a definitive library origin if any instance has it
@@ -568,7 +650,7 @@
       }
 
       html.push(
-        '<tr class="grp" data-toggle="' + gid + '">' +
+        '<tr class="grp sticky-grp" data-toggle="' + gid + '">' +
         '<td class="namecell"><span class="tw">▶</span>' + thumbHtml(g) + '<b>' + esc(g.name) + '</b>' + masterBadge(g) + '</td>' +
         '<td>' + sourceHtml(g) + '</td>' +
         '<td><b>' + g.count + '</b></td>' +
@@ -793,7 +875,7 @@
       var items = byComp[name];
       var gid = "dg" + gi;
       html.push(
-        '<tr class="grp" data-toggle="' + gid + '">' +
+        '<tr class="grp sticky-grp" data-toggle="' + gid + '">' +
         '<td><span class="tw">▶</span> <b>' + esc(name) + '</b></td>' +
         '<td><b>' + items.length + '</b></td><td></td><td></td></tr>'
       );

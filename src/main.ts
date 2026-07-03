@@ -717,7 +717,7 @@ async function runScan() {
   pixso.ui.postMessage({
     type: "result",
     fileName,
-    buildId: "BUILD-detach-group-v5",
+    buildId: "BUILD-resize-v6",
     instances,
     detaches,
     aborted: abort,
@@ -747,6 +747,11 @@ pixso.ui.onmessage = (msg: any) => {
     // msg: { key, nodeIds: string[] } — export a small preview of the first
     // node that renders. The UI keys previews by component key.
     exportThumbnail(msg.key, msg.nodeIds || []);
+  } else if (msg.type === "resize") {
+    // The UI drags an edge/corner and asks us to resize (only the sandbox can).
+    var w = Math.max(360, Math.min(2000, Math.round(msg.width) || 860));
+    var h = Math.max(320, Math.min(2000, Math.round(msg.height) || 660));
+    pixso.ui.resize(w, h);
   } else if (msg.type === "close") {
     pixso.closePlugin();
   }
