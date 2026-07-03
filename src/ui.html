@@ -899,7 +899,7 @@
   function safeFile(res) {
     var name = (res.fileName || "audit");
     // Replace path separators / reserved chars with a space, collapse to _.
-    name = name.replace(/[\/\\:*?"<>| -]+/g, " ");
+    name = name.replace(/[\/\\:*?"<>|\- ]+/g, " ");
     try {
       // Drop anything that isn't a letter (any script), number, space, . or -.
       name = name.replace(/[^\p{L}\p{N} .\-]+/gu, "");
