@@ -162,14 +162,8 @@
   <div id="instancesView">
     <div class="filterbar">
       <input type="text" id="search" placeholder="Search component name…" />
-      <select id="originFilter" title="Filter by origin">
-        <option value="">All origins</option>
-        <option value="library">Library</option>
-        <option value="local">Local</option>
-        <option value="unknown">Unresolved</option>
-      </select>
       <div class="multiselect" id="libFilterWrap">
-        <button type="button" id="libFilterBtn" class="ms-btn" title="Filter by library">All libraries</button>
+        <button type="button" id="libFilterBtn" class="ms-btn" title="Filter by source">All sources</button>
         <div id="libFilterMenu" class="ms-menu" style="display:none"></div>
       </div>
       <select id="viewMode" title="View mode">
@@ -207,8 +201,7 @@
   var showHidden = false;
   var showNested = false;
   var searchQuery = "";
-  var originFilterVal = "";
-  var libFilterVals = [];  // selected library names; empty = all libraries
+  var libFilterVals = [];  // selected sources (lib name / local / unresolved); empty = all
   var sortKey = "count";   // default: most-used first
   var sortDir = -1;        // -1 desc, 1 asc
   var viewMode = "flat";   // "flat" (group by name) or "tree" (nesting)
@@ -299,10 +292,18 @@
   // Thousands separator (spaces), no toLocaleString (unreliable in some runtimes).
   function fmtNum(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
 
+  // A record's "source" = its library name, or "local" / "unresolved". This is
+  // the single origin fact: the library name IS the origin; local and
+  // unresolved are just two more entries in the same list.
+  function recSource(r) {
+    if (r.origin === "library") return r.libraryName || "(unknown library)";
+    if (r.origin === "local") return "local";
+    return "unresolved";
+  }
   // Library multi-select match: empty selection = all; otherwise membership.
   function libMatches(r) {
     if (!libFilterVals.length) return true;
-    return libFilterVals.indexOf(r.libraryName || "") !== -1;
+    return libFilterVals.indexOf(recSource(r)) !== -1;
   }
 
   // Progress counters, flicker-free. Each metric (keyed) owns ONE row that is
@@ -527,7 +528,6 @@
     var q = searchQuery.toLowerCase();
     var pool = res.instances.filter(function (r) {
       if (!showHidden && !r.visible) return false;
-      if (originFilterVal && r.origin !== originFilterVal) return false;
       if (!libMatches(r)) return false;
       return true; // search handled at root level below
     });
@@ -639,7 +639,6 @@
   }
   el("showHidden").addEventListener("change", function () { showHidden = el("showHidden").checked; rerenderScope(); });
   el("showNested").addEventListener("change", function () { showNested = el("showNested").checked; rerenderScope(); });
-  el("originFilter").addEventListener("change", function () { originFilterVal = el("originFilter").value; rerender(); });
 
   // Library multi-select: button toggles the checkbox menu; outside-click closes.
   el("libFilterBtn").onclick = function (ev) {
@@ -653,8 +652,8 @@
   function updateLibBtnLabel() {
     var n = libFilterVals.length;
     el("libFilterBtn").textContent =
-      n === 0 ? "All libraries" : n === 1 ? libFilterVals[0] : n + " libraries";
-    el("libFilterBtn").title = n > 1 ? libFilterVals.join(", ") : "Filter by library";
+      n === 0 ? "All sources" : n === 1 ? libFilterVals[0] : n + " sources";
+    el("libFilterBtn").title = n > 1 ? libFilterVals.join(", ") : "Filter by source";
   }
   el("viewMode").addEventListener("change", function () {
     viewMode = el("viewMode").value;
@@ -685,7 +684,6 @@
     return res.instances.filter(function (r) {
       if (!showHidden && !r.visible) return false;
       if (!showNested && r.nestedInsideInstance) return false;
-      if (originFilterVal && r.origin !== originFilterVal) return false;
       if (!libMatches(r)) return false;
       if (q && r.componentName.toLowerCase().indexOf(q) === -1) return false;
       return true;
@@ -703,18 +701,25 @@
   }
 
   function populateLibFilter(res) {
+    // Every source present in scope: real library names + local + unresolved.
+    // The library name is the origin fact; local/unresolved are just two more
+    // entries in the same list.
     var names = {};
-    scopedInstances(res).forEach(function (r) {
-      if (r.origin === "library" && r.libraryName) names[r.libraryName] = 1;
+    scopedInstances(res).forEach(function (r) { names[recSource(r)] = 1; });
+    // Library names A→Z first, then local, then unresolved (pinned at the end).
+    var pinned = { "local": 1, "unresolved": 2 };
+    var list = Object.keys(names).sort(function (a, b) {
+      var pa = pinned[a] || 0, pb = pinned[b] || 0;
+      if (pa !== pb) return pa - pb;             // non-pinned (0) before local/unresolved
+      return a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0;
     });
-    var list = Object.keys(names).sort();
-    // Drop any selected libraries that left scope (new scan / toggle change),
+    // Drop any selected entries that left scope (new scan / toggle change),
     // so the filter never silently hides everything.
     libFilterVals = libFilterVals.filter(function (n) { return names[n]; });
 
     var menu = el("libFilterMenu");
     if (!list.length) {
-      menu.innerHTML = '<div style="padding:6px 8px;color:var(--muted)">No libraries</div>';
+      menu.innerHTML = '<div style="padding:6px 8px;color:var(--muted)">No sources</div>';
       updateLibBtnLabel();
       return;
     }
@@ -787,15 +792,13 @@
     el("summary").innerHTML = line1 + line2;
   }
 
-  // ---- exports ---- aggregated: one row per component (set), with its library
-  // and total instance count. Respects on-screen filters (matches what you see).
+  // ---- exports ---- aggregated: one row per component (set), with its source
+  // and total instance count. Respects the on-screen filters AND the current
+  // table sort (same sortKey/sortDir applied via sortGroups), so the export
+  // matches exactly what you see.
   function componentRows(res) {
     var groups = groupInstances(visibleInstances(res));
-    groups.sort(function (a, b) {
-      if (b.count !== a.count) return b.count - a.count;      // most-used first
-      var an = (a.name || "").toLowerCase(), bn = (b.name || "").toLowerCase();
-      return an < bn ? -1 : an > bn ? 1 : 0;                  // then A→Z
-    });
+    sortGroups(groups); // uses current sortKey / sortDir
     return groups.map(function (g) {
       // Column order: Component · Count · Library.
       return { Component: g.name, Count: g.count, Library: sourceLabel(g) };
