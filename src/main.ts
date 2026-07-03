@@ -717,7 +717,7 @@ async function runScan() {
   pixso.ui.postMessage({
     type: "result",
     fileName,
-    buildId: "BUILD-resize-v6",
+    buildId: "BUILD-merge-tab-v7",
     instances,
     detaches,
     aborted: abort,

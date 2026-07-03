@@ -33,18 +33,16 @@ jobs:
           cp manifest.json "$root/"
           cp dist/main.js "$root/dist/"
           cp src/ui.html "$root/src/"
-          cp merge-tool/index.html "$root/merge-tool.html"
           printf '%s\n' \
             'DS Component Audit' \
             '==================' \
             '' \
-            'Plugin (Pixso):' \
+            'Install (Pixso):' \
             '  Pixso -> Plugins -> Development -> Import from manifest -> pick manifest.json' \
             '  (in this folder). The plugin then appears in your plugins list.' \
             '' \
-            'Merge tool:' \
-            '  Open merge-tool.html in any browser. Drag the plugin.xlsx exports' \
-            '  onto it to combine them into one file.' \
+            'The plugin has an Instances tab (audit), a Detach tab, a Merge tab' \
+            '(combine .xlsx exports from several files), and a Debug tab.' \
             '' \
             'To update: download the latest package, unzip, delete the old folder,' \
             'and re-import the manifest in Pixso.' \
@@ -56,10 +54,10 @@ jobs:
         with:
           files: ds-component-audit.zip
           body: |
-            One package with both the Pixso plugin and the merge tool.
-
             1. Download **ds-component-audit.zip** and unzip it.
-            2. **Plugin** — in Pixso: Plugins → Development → Import from manifest → pick `manifest.json` in the folder.
-            3. **Merge tool** — open `merge-tool.html` in a browser (no install).
+            2. In Pixso: Plugins → Development → Import from manifest → pick `manifest.json` in the folder.
+
+            The Merge tool is now a tab inside the plugin (Merge) — combine .xlsx
+            exports from several files there.
 
             To update: download the new zip, unzip, delete the old folder, re-import the manifest.

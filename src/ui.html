@@ -18,8 +18,23 @@
     display: flex; flex-direction: column; overflow: hidden;
   }
   /* the active results view fills the remaining height */
-  #instancesView, #detachView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #instancesView, #detachView, #mergeView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #debugView { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* Merge tab */
+  .merge-top { padding: 8px 14px 0; }
+  .mergedrop {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 18px; text-align: center;
+    color: var(--muted); cursor: pointer; background: #fafafa; font-size: 12px;
+  }
+  .mergedrop.over { border-color: #93c5fd; background: #eff6ff; color: var(--fg); }
+  .mergedrop b { color: var(--fg); }
+  .mergefiles { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+  .mf { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; }
+  .mf-nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mf-meta { color: var(--muted); white-space: nowrap; }
+  .mf-err { color: var(--danger); white-space: nowrap; }
+  .mf-rm { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+  .mf-rm:hover { color: var(--danger); }
   .summary-inline {
     font-size: 11px; color: var(--muted); white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; margin-left: 12px;
@@ -79,6 +94,7 @@
   thead th { position: sticky; top: 0; background: #f9fafb; z-index: 1; }
   th.sortable { cursor: pointer; user-select: none; }
   th.sortable:hover { background: #eef2f7; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .sortarrow { color: #cbd5e1; font-size: 10px; }
   .sortarrow.on { color: var(--accent); }
   td.path { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
@@ -199,6 +215,7 @@
   <div class="tabs" id="tabs" style="align-items:center; display:none">
     <button data-tab="instances" class="active">Instances</button>
     <button data-tab="detach">Detach (heuristic)</button>
+    <button data-tab="merge">Merge</button>
     <button data-tab="debug">Debug</button>
   </div>
 
@@ -244,6 +261,27 @@
       </colgroup>
       <thead></thead>
       <tbody><tr><td class="empty">—</td></tr></tbody>
+    </table></div>
+  </div>
+
+  <div id="mergeView" style="display:none">
+    <div class="note">Combine .xlsx exports from this plugin (from other files/projects). Rows with the same Component + Library are merged and their counts summed.</div>
+    <div class="merge-top">
+      <div id="mergeDrop" class="mergedrop">
+        <b>Drag &amp; drop .xlsx exports here</b> — or click to choose
+        <input id="mergePicker" type="file" accept=".xlsx" multiple hidden />
+      </div>
+      <div id="mergeFiles" class="mergefiles"></div>
+    </div>
+    <div class="filterbar">
+      <button id="mergeExportBtn" class="primary" disabled>Export merged .xlsx</button>
+      <button id="mergeClearBtn" disabled>Clear</button>
+      <span class="filtercount" id="mergeCount"></span>
+    </div>
+    <div class="tablewrap"><table id="mergeTable">
+      <colgroup><col style="width:58%" /><col style="width:14%" /><col style="width:28%" /></colgroup>
+      <thead></thead>
+      <tbody><tr><td class="empty">Drop .xlsx exports above to combine them.</td></tr></tbody>
     </table></div>
   </div>
 
@@ -324,11 +362,15 @@
   // the first result. Uses display:flex to match the CSS (block would break the
   // full-height flex layout).
   function applyViews() {
-    var ready = !scanningNow && hasResult;
-    el("instancesView").style.display = (ready && currentTab === "instances") ? "flex" : "none";
-    el("detachView").style.display = (ready && currentTab === "detach") ? "flex" : "none";
-    el("debugView").style.display = (ready && currentTab === "debug") ? "flex" : "none";
-    if (ready && currentTab === "debug") el("debugText").value = buildDebug();
+    // Nothing shows during a scan. Otherwise the active tab's view shows; the
+    // Instances/Detach tables carry their own "No scan yet" empty state.
+    var vis = scanningNow ? "" : currentTab;
+    el("instancesView").style.display = (vis === "instances") ? "flex" : "none";
+    el("detachView").style.display = (vis === "detach") ? "flex" : "none";
+    el("mergeView").style.display = (vis === "merge") ? "flex" : "none";
+    el("debugView").style.display = (vis === "debug") ? "flex" : "none";
+    el("tabs").style.display = scanningNow ? "none" : "flex";
+    if (vis === "debug") el("debugText").value = buildDebug();
   }
 
   var hasResult = false; // a scan has completed at least once → show tabs
@@ -336,9 +378,7 @@
     scanningNow = on;
     el("scanBtn").disabled = on;
     el("progWrap").style.display = on ? "block" : "none";
-    // Tabs appear only once there's something to show, and are hidden mid-scan.
-    el("tabs").style.display = (!on && hasResult) ? "flex" : "none";
-    applyViews(); // hide results while scanning; restore the active tab after
+    applyViews(); // hides results + tabs while scanning; restores after
     if (on) {
       el("summaryInline").innerHTML = "";
       // New scan → previews from the previous file are stale.
@@ -1201,35 +1241,46 @@
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
     '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' +
     '</cellXfs></styleSheet>';
-  function buildXlsx(rows) {
+  // Excel sheet name rules: <=31 chars, none of \ / ? * [ ] :, non-empty, unique.
+  function sheetName(raw, used) {
+    var n = String(raw || "Sheet").replace(/[\\\/?*\[\]:]/g, " ").trim();
+    n = n.slice(0, 31) || "Sheet";
+    var base = n, k = 2;
+    while (used[n.toLowerCase()]) {
+      var suffix = " (" + k + ")";
+      n = base.slice(0, 31 - suffix.length) + suffix;
+      k++;
+    }
+    used[n.toLowerCase()] = 1;
+    return n;
+  }
+
+  // sheets: [{ name, rows }]. Multi-sheet workbook with a shared styles part.
+  function buildXlsx(sheets) {
+    var used = {};
+    var meta = sheets.map(function (s, i) { return { title: sheetName(s.name, used), rows: s.rows, idx: i + 1 }; });
+    var stylesRid = meta.length + 1;
+    var ctOverrides = meta.map(function (m) {
+      return '<Override PartName="/xl/worksheets/sheet' + m.idx + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
+    }).join("");
+    var sheetTags = meta.map(function (m) {
+      return '<sheet name="' + xmlEsc(m.title) + '" sheetId="' + m.idx + '" r:id="rId' + m.idx + '"/>';
+    }).join("");
+    var sheetRels = meta.map(function (m) {
+      return '<Relationship Id="rId' + m.idx + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + m.idx + '.xml"/>';
+    }).join("");
     var parts = [
       { name: "[Content_Types].xml", xml:
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-        '<Default Extension="xml" ContentType="application/xml"/>' +
-        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
-        '</Types>' },
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' + ctOverrides + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
       { name: "_rels/.rels", xml:
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
-        '</Relationships>' },
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
       { name: "xl/workbook.xml", xml:
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-        '<sheets><sheet name="Components" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + sheetTags + '</sheets></workbook>' },
       { name: "xl/_rels/workbook.xml.rels", xml:
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
-        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
-        '</Relationships>' },
-      { name: "xl/styles.xml", xml: STYLES_XML },
-      { name: "xl/worksheets/sheet1.xml", xml: sheetXml(rows) }
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheetRels + '<Relationship Id="rId' + stylesRid + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+      { name: "xl/styles.xml", xml: STYLES_XML }
     ];
+    meta.forEach(function (m) { parts.push({ name: "xl/worksheets/sheet" + m.idx + ".xml", xml: sheetXml(m.rows) }); });
     return zipStore(parts.map(function (p) { return { name: p.name, data: utf8(p.xml) }; }));
   }
 
@@ -1240,8 +1291,177 @@
 
   el("xlsxBtn").onclick = function () {
     if (!lastResult) return;
-    download(safeFile(lastResult) + "__component-audit.xlsx", buildXlsx(componentRows(lastResult)));
+    download(safeFile(lastResult) + "__component-audit.xlsx", buildXlsx([{ name: "Components", rows: componentRows(lastResult) }]));
   };
+
+  // ---- Merge tab: read the plugin's own .xlsx exports and combine them ----
+  // Reader for our uncompressed (STORE), inline-string workbooks — no inflate.
+  function mzU16(b,o){ return b[o] | (b[o+1]<<8); }
+  function mzU32(b,o){ return (b[o] | (b[o+1]<<8) | (b[o+2]<<16) | (b[o+3]<<24)) >>> 0; }
+  function unzipStore(bytes){
+    var files = {}, i = 0, n = bytes.length;
+    while (i + 4 <= n) {
+      if (mzU32(bytes, i) !== 0x04034b50) break;
+      var method = mzU16(bytes, i + 8);
+      var compSize = mzU32(bytes, i + 18);
+      var nameLen = mzU16(bytes, i + 26);
+      var extraLen = mzU16(bytes, i + 28);
+      var nameStart = i + 30;
+      var name = new TextDecoder().decode(bytes.subarray(nameStart, nameStart + nameLen));
+      var dataStart = nameStart + nameLen + extraLen;
+      if (method !== 0) throw new Error("compressed file (re-saved via Excel?)");
+      files[name] = bytes.subarray(dataStart, dataStart + compSize);
+      i = dataStart + compSize;
+    }
+    return files;
+  }
+  function xmlUnescape(s){
+    return s.replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,"&");
+  }
+  function parseSheet(xml){
+    var rows = [], rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g, rm;
+    while ((rm = rowRe.exec(xml))) {
+      var cells = [], cm, cellRe = /<c\b[^>]*>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/c>|<c\b[^>]*\/>/g;
+      while ((cm = cellRe.exec(rm[1]))) cells.push(cm[1] != null ? xmlUnescape(cm[1]) : "");
+      rows.push(cells);
+    }
+    if (!rows.length) return { headers:[], data:[] };
+    var headers = rows[0];
+    var data = rows.slice(1).map(function(cells){
+      var o = {}; headers.forEach(function(h, i){ o[h] = cells[i] != null ? cells[i] : ""; }); return o;
+    });
+    return { headers:headers, data:data };
+  }
+  function readXlsx(arrayBuffer){
+    var entries = unzipStore(new Uint8Array(arrayBuffer));
+    // Merge only the first sheet (the plugin's own export or a prior merge's total).
+    var sheet = entries["xl/worksheets/sheet1.xml"];
+    if (!sheet) throw new Error("no worksheet found");
+    return parseSheet(new TextDecoder().decode(sheet));
+  }
+
+  // Combine: key by Component + Library; sum Count. Different name OR library
+  // stays a separate row.
+  function mergeRows(allRows){
+    var byComp = {}, order = [];
+    allRows.forEach(function(r){
+      var comp = (r.Component != null ? r.Component : "").trim();
+      var lib  = (r.Library  != null ? r.Library  : "").trim();
+      var cnt  = parseInt(r.Count, 10);
+      if (!comp && !lib) return;
+      if (isNaN(cnt)) cnt = 0;
+      if (!byComp[comp]) byComp[comp] = {};
+      var e = byComp[comp][lib];
+      if (!e) { e = { Component:comp, Library:lib, Count:0 }; byComp[comp][lib] = e; order.push(e); }
+      e.Count += cnt;
+    });
+    return order;
+  }
+
+  // ---- Merge tab state & UI ----
+  var mergeFiles = [];              // { name, rows, error }
+  var mergeSortKey = "Count", mergeSortDir = -1;
+
+  function mergeSort(rows){
+    rows.sort(function(a,b){
+      var av, bv;
+      if (mergeSortKey === "Count") { av = +a.Count||0; bv = +b.Count||0; }
+      else { av = String(a[mergeSortKey]||"").toLowerCase(); bv = String(b[mergeSortKey]||"").toLowerCase(); }
+      if (av<bv) return -1*mergeSortDir;
+      if (av>bv) return 1*mergeSortDir;
+      var an=String(a.Component||"").toLowerCase(), bn=String(b.Component||"").toLowerCase();
+      return an<bn?-1:an>bn?1:0;
+    });
+    return rows;
+  }
+  function mergedRows(){
+    var all = [];
+    mergeFiles.forEach(function(f){ if (f.rows) all = all.concat(f.rows); });
+    return mergeSort(mergeRows(all));
+  }
+  function mergeOut(rows){
+    return rows.map(function(r){ return { Component:r.Component, Count:(+r.Count||0), Library:r.Library }; });
+  }
+
+  function renderMergeFiles(){
+    var wrap = el("mergeFiles");
+    if (!mergeFiles.length) { wrap.innerHTML = ""; return; }
+    wrap.innerHTML = mergeFiles.map(function(f, i){
+      var meta = f.error ? '<span class="mf-err">' + esc(f.error) + '</span>' : '<span class="mf-meta">' + f.rows.length + ' rows</span>';
+      return '<div class="mf"><span class="mf-nm">' + esc(f.name) + '</span>' + meta + '<button class="mf-rm" data-i="' + i + '" title="Remove">×</button></div>';
+    }).join("");
+    wrap.querySelectorAll(".mf-rm").forEach(function(btn){
+      btn.onclick = function(){ mergeFiles.splice(+btn.getAttribute("data-i"),1); renderMergeAll(); };
+    });
+  }
+  function renderMergePreview(){
+    var rows = mergedRows();
+    var thead = el("mergeTable").querySelector("thead");
+    var tbody = el("mergeTable").querySelector("tbody");
+    var cols = [["Component","Component"],["Count","Count"],["Library","Library"]];
+    function arrow(k){ return mergeSortKey===k ? ('<span class="sortarrow on">' + (mergeSortDir>0?" ↑":" ↓") + '</span>') : ''; }
+    thead.innerHTML = '<tr>' + cols.map(function(c){
+      return '<th class="sortable' + (c[0]==="Count"?" num":"") + '" data-key="' + c[0] + '">' + c[1] + arrow(c[0]) + '</th>';
+    }).join("") + '</tr>';
+    thead.querySelectorAll("th").forEach(function(th){
+      th.onclick = function(){
+        var k = th.getAttribute("data-key");
+        if (mergeSortKey===k) mergeSortDir=-mergeSortDir; else { mergeSortKey=k; mergeSortDir=(k==="Count")?-1:1; }
+        renderMergePreview();
+      };
+    });
+    if (!rows.length) { tbody.innerHTML = '<tr><td class="empty" colspan="3">Drop .xlsx exports above to combine them.</td></tr>'; return; }
+    tbody.innerHTML = rows.map(function(r){
+      return '<tr><td>' + esc(r.Component) + '</td><td class="num">' + fmtNum(r.Count) + '</td><td>' + esc(r.Library) + '</td></tr>';
+    }).join("");
+  }
+  function renderMergeAll(){
+    renderMergeFiles();
+    renderMergePreview();
+    var ok = mergeFiles.some(function(f){ return f.rows && f.rows.length; });
+    el("mergeExportBtn").disabled = !ok;
+    el("mergeClearBtn").disabled = !mergeFiles.length;
+    var n = mergeFiles.length, rc = mergedRows().length;
+    el("mergeCount").textContent = n ? (n + " file" + (n>1?"s":"") + " · " + rc + " rows") : "";
+  }
+  function addMergeFiles(fileList){
+    var arr = Array.prototype.slice.call(fileList).filter(function(f){ return /\.xlsx$/i.test(f.name); });
+    var pending = arr.length;
+    if (!pending) return;
+    arr.forEach(function(file){
+      var reader = new FileReader();
+      reader.onload = function(){
+        var entry = { name:file.name, rows:null, error:null };
+        try {
+          var res = readXlsx(reader.result);
+          var need = ["Component","Library","Count"];
+          if (!need.every(function(h){ return res.headers.indexOf(h) !== -1; })) throw new Error("not a component-audit export");
+          entry.rows = res.data;
+        } catch(e){ entry.error = "couldn't read: " + e.message; }
+        mergeFiles.push(entry);
+        if (--pending === 0) renderMergeAll(); else renderMergeFiles();
+      };
+      reader.onerror = function(){ mergeFiles.push({ name:file.name, rows:null, error:"read failed" }); if(--pending===0) renderMergeAll(); };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+  (function wireMerge(){
+    var drop = el("mergeDrop"), picker = el("mergePicker");
+    drop.onclick = function(){ picker.click(); };
+    picker.onchange = function(){ addMergeFiles(picker.files); picker.value=""; };
+    ["dragenter","dragover"].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add("over"); }); });
+    ["dragleave","drop"].forEach(function(ev){ drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove("over"); }); });
+    drop.addEventListener("drop", function(e){ if (e.dataTransfer && e.dataTransfer.files) addMergeFiles(e.dataTransfer.files); });
+    el("mergeClearBtn").onclick = function(){ mergeFiles = []; renderMergeAll(); };
+    el("mergeExportBtn").onclick = function(){
+      var mr = mergedRows();
+      if (!mr.length) return;
+      var sheets = [{ name:"Merged", rows:mergeOut(mr) }];
+      mergeFiles.forEach(function(f){ if (f.rows && f.rows.length) sheets.push({ name:f.name.replace(/\.xlsx$/i,""), rows:mergeOut(mergeSort(f.rows.slice())) }); });
+      download("merged__component-audit.xlsx", buildXlsx(sheets));
+    };
+    renderMergeAll();
+  })();
 
   // ---- messages from sandbox ----
   window.onmessage = function (event) {
