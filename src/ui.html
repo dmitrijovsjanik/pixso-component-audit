@@ -32,7 +32,7 @@
   .summary b { color: var(--fg); }
   .progress-wrap { padding: 8px 14px 12px; }
   .proghead { display: flex; align-items: center; gap: 8px; }
-  .progphase { flex: 1; font-weight: 600; }
+  .progphase { font-weight: 600; }
   .progelapsed { color: var(--muted); font-variant-numeric: tabular-nums; }
   .spinner {
     width: 14px; height: 14px; border-radius: 50%; flex: none;
@@ -132,13 +132,11 @@
 </head>
 <body>
   <header>
-    <h1>DS Component Audit</h1>
-    <span id="fileName" class="flag"></span>
+    <h1 id="fileName"></h1>
   </header>
 
   <div class="toolbar">
     <button id="scanBtn" class="primary">Scan file</button>
-    <button id="cancelBtn" class="danger" disabled>Cancel</button>
     <div class="spacer" style="flex:1"></div>
     <button id="csvBtn" disabled>Export CSV</button>
     <button id="xlsxBtn" disabled>Export XLSX</button>
@@ -158,6 +156,7 @@
   <div class="tabs" style="align-items:center">
     <button data-tab="instances" class="active">Instances</button>
     <button data-tab="detach">Detach (heuristic)</button>
+    <button data-tab="debug">Debug</button>
   </div>
 
   <div id="instancesView">
@@ -197,17 +196,10 @@
     <div class="tablewrap"><table id="detachTable"><tbody><tr><td class="empty">—</td></tr></tbody></table></div>
   </div>
 
-  <div id="debugPanel" style="display:none; padding:0 14px 10px">
+  <div id="debugView" style="display:none; padding:8px 14px 10px">
     <div class="summary" style="margin:0 0 4px">Diagnostic (select all &amp; copy manually):</div>
-    <textarea id="debugText" readonly style="width:100%; height:160px; font:11px/1.4 monospace; border:1px solid var(--border); border-radius:6px; padding:8px; resize:vertical;"></textarea>
+    <textarea id="debugText" readonly style="width:100%; height:260px; font:11px/1.4 monospace; border:1px solid var(--border); border-radius:6px; padding:8px; resize:vertical;"></textarea>
   </div>
-
-  <footer>
-    <button id="debugBtn">Show debug</button>
-    <button id="copyBtn">Copy</button>
-    <div class="spacer"></div>
-    <button id="closeBtn">Close</button>
-  </footer>
 
 <script>
   var post = function (m) { parent.postMessage({ pluginMessage: m }, "*"); };
@@ -226,14 +218,23 @@
   var elapsedTimer = null;
   var scanStart = 0;
   function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
+
+  var scanningNow = false;
+  var currentTab = "instances";
+  // Show exactly one of the three views (unless a scan is running → show none).
+  function applyViews() {
+    el("instancesView").style.display = (!scanningNow && currentTab === "instances") ? "block" : "none";
+    el("detachView").style.display = (!scanningNow && currentTab === "detach") ? "block" : "none";
+    el("debugView").style.display = (!scanningNow && currentTab === "debug") ? "block" : "none";
+    if (!scanningNow && currentTab === "debug") el("debugText").value = buildDebug();
+  }
+
   function setScanning(on) {
+    scanningNow = on;
     el("scanBtn").disabled = on;
-    el("cancelBtn").disabled = !on;
     el("progWrap").style.display = on ? "block" : "none";
-    // Hide the results while a scan runs, so a stale table doesn't look "live".
-    el("instancesView").style.display = on ? "none" : (currentTab === "instances" ? "block" : "none");
-    el("detachView").style.display = on ? "none" : (currentTab === "detach" ? "block" : "none");
     el("summary").style.display = on ? "none" : "block";
+    applyViews(); // hide results while scanning; restore the active tab after
     if (on) {
       el("progPhase").textContent = "Starting…";
       resetCounters();
@@ -249,8 +250,6 @@
   }
 
   el("scanBtn").onclick = function () { setScanning(true); post({ type: "scan" }); };
-  el("cancelBtn").onclick = function () { post({ type: "cancel" }); };
-  el("closeBtn").onclick = function () { post({ type: "close" }); };
   function buildDebug() {
     if (!lastResult) return "no data yet — run a scan first";
     var payload = {
@@ -266,30 +265,6 @@
     };
     return JSON.stringify(payload, null, 2);
   }
-
-  el("debugBtn").onclick = function () {
-    var panel = el("debugPanel");
-    var showing = panel.style.display !== "none";
-    if (showing) { panel.style.display = "none"; el("debugBtn").textContent = "Show debug"; return; }
-    el("debugText").value = buildDebug();
-    panel.style.display = "block";
-    el("debugBtn").textContent = "Hide debug";
-  };
-
-  el("copyBtn").onclick = function () {
-    var ta = el("debugText");
-    if (!ta.value) ta.value = buildDebug();
-    el("debugPanel").style.display = "block";
-    el("debugBtn").textContent = "Hide debug";
-    ta.focus(); ta.select();
-    var ok = false;
-    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-    if (!ok && navigator.clipboard) {
-      navigator.clipboard.writeText(ta.value).then(function(){}, function(){});
-    }
-    el("copyBtn").textContent = ok ? "Copied!" : "Select ↑ & Cmd+C";
-    setTimeout(function(){ el("copyBtn").textContent = "Copy"; }, 1600);
-  };
 
   // Click a row → focus that node on the canvas (delegated on both tables).
   function wireFocus(tableId) {
@@ -309,15 +284,13 @@
   wireFocus("detachTable");
 
   // Tabs
-  var currentTab = "instances";
   var tabBtns = document.querySelectorAll(".tabs button");
   tabBtns.forEach(function (b) {
     b.onclick = function () {
       tabBtns.forEach(function (x) { x.classList.remove("active"); });
       b.classList.add("active");
       currentTab = b.getAttribute("data-tab");
-      el("instancesView").style.display = currentTab === "instances" ? "block" : "none";
-      el("detachView").style.display = currentTab === "detach" ? "block" : "none";
+      applyViews();
     };
   });
 
@@ -985,7 +958,7 @@
     } else if (msg.type === "result") {
       setScanning(false);
       lastResult = msg;
-      el("fileName").textContent = (msg.buildId ? "[" + msg.buildId + "] " : "[OLD BUILD] ") + (msg.fileName || "");
+      el("fileName").textContent = msg.fileName || "";
       populateLibFilter(msg);
       summarize(msg);
       renderList(msg);
