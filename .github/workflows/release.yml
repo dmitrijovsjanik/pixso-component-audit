@@ -28,27 +28,38 @@ jobs:
 
       - name: Package the Pixso plugin
         run: |
-          mkdir -p package/ds-component-audit
-          cp manifest.json package/ds-component-audit/
-          mkdir -p package/ds-component-audit/dist package/ds-component-audit/src
-          cp dist/main.js package/ds-component-audit/dist/
-          cp src/ui.html package/ds-component-audit/src/
-          cd package && zip -r ../ds-component-audit-plugin.zip ds-component-audit
-          cd ..
+          root=package/ds-component-audit
+          mkdir -p "$root/dist" "$root/src"
+          cp manifest.json "$root/"
+          cp dist/main.js "$root/dist/"
+          cp src/ui.html "$root/src/"
+          cp merge-tool/index.html "$root/merge-tool.html"
+          printf '%s\n' \
+            'DS Component Audit' \
+            '==================' \
+            '' \
+            'Plugin (Pixso):' \
+            '  Pixso -> Plugins -> Development -> Import from manifest -> pick manifest.json' \
+            '  (in this folder). The plugin then appears in your plugins list.' \
+            '' \
+            'Merge tool:' \
+            '  Open merge-tool.html in any browser. Drag the plugin.xlsx exports' \
+            '  onto it to combine them into one file.' \
+            '' \
+            'To update: download the latest package, unzip, delete the old folder,' \
+            'and re-import the manifest in Pixso.' \
+            > "$root/README.txt"
+          cd package && zip -r ../ds-component-audit.zip ds-component-audit
 
-      - name: Package the merge tool
-        run: cp merge-tool/index.html merge-tool.html
-
-      - name: Create GitHub Release with assets
+      - name: Create GitHub Release with the package
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ds-component-audit-plugin.zip
-            merge-tool.html
+          files: ds-component-audit.zip
           body: |
-            ## Install the plugin
-            1. Download **ds-component-audit-plugin.zip** and unzip it.
-            2. In Pixso: Plugins → Development → Import from manifest → pick `manifest.json` inside the unzipped folder.
+            One package with both the Pixso plugin and the merge tool.
 
-            ## Merge tool
-            Download **merge-tool.html** and open it in a browser — no install needed.
+            1. Download **ds-component-audit.zip** and unzip it.
+            2. **Plugin** — in Pixso: Plugins → Development → Import from manifest → pick `manifest.json` in the folder.
+            3. **Merge tool** — open `merge-tool.html` in a browser (no install).
+
+            To update: download the new zip, unzip, delete the old folder, re-import the manifest.
