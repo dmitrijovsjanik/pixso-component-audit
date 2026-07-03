@@ -78,7 +78,7 @@
     </table>
   </div>
 
-  <p class="note">Reads the plugin's own uncompressed .xlsx directly (no libraries). Files re-saved through Excel/Sheets may not parse.</p>
+  <p class="note">The exported file has the merged total on the first sheet and each original file on its own sheet. The current sort (click a column header) is applied to the export too. Reads the plugin's own uncompressed .xlsx directly (no libraries); files re-saved through Excel/Sheets may not parse.</p>
 
 <script>
 "use strict";
@@ -215,15 +215,50 @@ function sheetXml(rows){
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+colsXml+'<sheetData>'+lines.join("")+'</sheetData></worksheet>';
 }
 var STYLES_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFECECEC"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>';
-function buildXlsx(rows){
+// Sanitize a worksheet name to Excel's rules: <=31 chars, none of \ / ? * [ ] :,
+// non-empty, and unique within the workbook.
+function sheetName(raw, used){
+  var n = String(raw || "Sheet").replace(/[\\\/?*\[\]:]/g, " ").trim();
+  n = n.slice(0, 31) || "Sheet";
+  var base = n, k = 2;
+  while (used[n.toLowerCase()]) {
+    var suffix = " (" + k + ")";
+    n = base.slice(0, 31 - suffix.length) + suffix;
+    k++;
+  }
+  used[n.toLowerCase()] = 1;
+  return n;
+}
+
+// sheets: [{ name, rows }]. First sheet is the merged result, the rest are the
+// original files. Builds a valid multi-sheet workbook (shared styles part).
+function buildXlsx(sheets){
+  var used = {};
+  var meta = sheets.map(function(s, i){
+    return { title: sheetName(s.name, used), rows: s.rows, idx: i + 1 };
+  });
+  var stylesRid = meta.length + 1; // styles rel comes after all sheet rels
+
+  var ctOverrides = meta.map(function(m){
+    return '<Override PartName="/xl/worksheets/sheet' + m.idx + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
+  }).join("");
+  var sheetTags = meta.map(function(m){
+    return '<sheet name="' + xmlEsc(m.title) + '" sheetId="' + m.idx + '" r:id="rId' + m.idx + '"/>';
+  }).join("");
+  var sheetRels = meta.map(function(m){
+    return '<Relationship Id="rId' + m.idx + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + m.idx + '.xml"/>';
+  }).join("");
+
   var parts=[
-    { name:"[Content_Types].xml", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
+    { name:"[Content_Types].xml", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' + ctOverrides + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>' },
     { name:"_rels/.rels", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
-    { name:"xl/workbook.xml", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Components" sheetId="1" r:id="rId1"/></sheets></workbook>' },
-    { name:"xl/_rels/workbook.xml.rels", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
-    { name:"xl/styles.xml", xml:STYLES_XML },
-    { name:"xl/worksheets/sheet1.xml", xml:sheetXml(rows) }
+    { name:"xl/workbook.xml", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + sheetTags + '</sheets></workbook>' },
+    { name:"xl/_rels/workbook.xml.rels", xml:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheetRels + '<Relationship Id="rId' + stylesRid + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+    { name:"xl/styles.xml", xml:STYLES_XML }
   ];
+  meta.forEach(function(m){
+    parts.push({ name:"xl/worksheets/sheet" + m.idx + ".xml", xml:sheetXml(m.rows) });
+  });
   return zipStore(parts.map(function(p){ return { name:p.name, data:utf8(p.xml) }; }));
 }
 function download(name, blob){
@@ -241,20 +276,24 @@ var el = function(id){ return document.getElementById(id); };
 
 function fmt(n){ return String(n).replace(/\B(?=(\d{3})+(?!\d))/g," "); }
 
-function merged(){
-  var all = [];
-  loaded.forEach(function(f){ if (f.rows) all = all.concat(f.rows); });
-  var rows = mergeRows(all);
+// Apply the current sort (shared by the preview and the export) in place.
+function sortRows(rows){
   rows.sort(function(a,b){
     var av, bv;
-    if (sortKey === "Count") { av=a.Count; bv=b.Count; }
+    if (sortKey === "Count") { av = +a.Count||0; bv = +b.Count||0; }
     else { av=String(a[sortKey]||"").toLowerCase(); bv=String(b[sortKey]||"").toLowerCase(); }
     if (av<bv) return -1*sortDir;
     if (av>bv) return 1*sortDir;
-    var an=a.Component.toLowerCase(), bn=b.Component.toLowerCase();
+    var an=String(a.Component||"").toLowerCase(), bn=String(b.Component||"").toLowerCase();
     return an<bn?-1:an>bn?1:0;
   });
   return rows;
+}
+
+function merged(){
+  var all = [];
+  loaded.forEach(function(f){ if (f.rows) all = all.concat(f.rows); });
+  return sortRows(mergeRows(all));
 }
 
 function renderFiles(){
@@ -342,12 +381,20 @@ picker.onchange = function(){ addFiles(picker.files); picker.value=""; };
 drop.addEventListener("drop", function(e){ if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files); });
 
 el("clearBtn").onclick = function(){ loaded = []; renderAll(); };
+// Normalize to the plugin's column order (Component · Count · Library).
+function outRows(rows){
+  return rows.map(function(r){ return { Component:r.Component, Count:(+r.Count||0), Library:r.Library }; });
+}
 el("exportBtn").onclick = function(){
-  var rows = merged();
-  if (!rows.length) return;
-  // Column order matches the plugin: Component · Count · Library.
-  var out = rows.map(function(r){ return { Component:r.Component, Count:r.Count, Library:r.Library }; });
-  download("merged__component-audit.xlsx", buildXlsx(out));
+  var mergedRows = merged();
+  if (!mergedRows.length) return;
+  // Sheet 1: merged total. Then one sheet per original file (same current sort).
+  var sheets = [{ name:"Merged", rows:outRows(mergedRows) }];
+  loaded.forEach(function(f){
+    if (!f.rows || !f.rows.length) return;
+    sheets.push({ name:f.name.replace(/\.xlsx$/i,""), rows:outRows(sortRows(f.rows.slice())) });
+  });
+  download("merged__component-audit.xlsx", buildXlsx(sheets));
 };
 
 renderAll();
