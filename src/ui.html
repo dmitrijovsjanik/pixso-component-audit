@@ -893,7 +893,22 @@
   }
 
   // File name carries the project/file name: <project>__component-audit.{csv,xlsx}
-  function safeFile(res) { return (res.fileName || "audit").replace(/[^\w.-]+/g, "_"); }
+  // Sanitize for a download filename. Keep letters of ANY script (Cyrillic etc.)
+  // and digits — \w is ASCII-only, which turned "Переезд" into "_______".
+  // Only strip characters that are actually unsafe in a filename.
+  function safeFile(res) {
+    var name = (res.fileName || "audit");
+    // Replace path separators / reserved chars with a space, collapse to _.
+    name = name.replace(/[\/\\:*?"<>| -]+/g, " ");
+    try {
+      // Drop anything that isn't a letter (any script), number, space, . or -.
+      name = name.replace(/[^\p{L}\p{N} .\-]+/gu, "");
+    } catch (e) {
+      /* very old engine without \p{L}: fall back, keep as-is after the strip above */
+    }
+    name = name.replace(/\s+/g, "_").replace(/_+/g, "_").replace(/^[_.-]+|[_.-]+$/g, "");
+    return name || "audit";
+  }
 
   // ---- self-contained .xlsx writer (no CDN, no library) ----
   // A .xlsx is a ZIP of XML parts. We only need one sheet of flat string rows,
