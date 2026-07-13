@@ -15,8 +15,9 @@ the year-over-year audit.
 - **Slot** — heuristic flag: instance sits in a swap slot of its parent.
 - **Page / path / file** — so exports from many files merge mechanically into one table.
 
-Plus a separate **Detach (heuristic)** sheet: non-instance layers whose name matches a
-known component. Name-based only — expect false positives. Never mixed into origin.
+Plus a separate **Possible matches** view: FRAME layers whose normalized name matches a
+component confirmed by a placed instance or local master in the current file. This is
+not proof of detachment; false positives remain possible. Never mixed into origin.
 
 ## Known limits (honest)
 

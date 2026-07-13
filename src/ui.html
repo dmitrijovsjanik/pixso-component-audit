@@ -30,8 +30,9 @@
   }
   .modeswitch button.active { background: #fff; color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
   /* Merge mode */
-  .merge-top { padding: 8px 14px 0; }
+  .merge-top { padding: 8px 14px 8px; width: 100%; }
   .mergedrop {
+    width: 100%;
     border: 2px dashed var(--border); border-radius: 10px; padding: 14px; text-align: center;
     color: var(--muted); cursor: pointer; background: #fafafa; font-size: 12px;
   }
@@ -159,6 +160,11 @@
   /* empty-state cell: centered, no border line, fills the table area */
   td.empty { text-align: center; color: var(--muted); border-bottom: none; padding: 40px 24px; }
   tr:has(> td.empty):hover td { background: transparent; }
+  #mergeTable { height: 100%; width: 100%; }
+  #mergeTable tbody { width: 100%; }
+  #mergeTable tbody:has(> tr > td.empty) { height: 100%; }
+  #mergeTable tr:has(> td.empty) { height: 100%; width: 100%; }
+  #mergeTable td.empty { height: 100%; width: 100%; }
   /* full-area centered prompt (before the first scan / no data) */
   .bigempty { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); }
   .note { padding: 6px 14px; color: var(--muted); font-style: italic; }
@@ -238,7 +244,7 @@
 
     <div class="tabs" id="tabs" style="align-items:center; display:none">
       <button data-tab="instances" class="active">Instances</button>
-      <button data-tab="detach">Detach (heuristic)</button>
+      <button data-tab="detach">Possible matches</button>
       <button data-tab="debug">Debug</button>
     </div>
 
@@ -982,8 +988,8 @@
     var rows = detachFiltered(res);
     var thead = el("detachTable").querySelector("thead");
     var tbody = el("detachTable").querySelector("tbody");
-    thead.innerHTML = '<tr><th>Matched component / layer</th><th>Count</th><th>Page</th><th>Path</th></tr>';
-    if (!rows.length) { tbody.innerHTML = '<tr><td class="empty" colspan="4">No name-matched detached layers.</td></tr>'; return; }
+    thead.innerHTML = '<tr><th>Matched component / layer</th><th>Count</th><th>Evidence</th><th>Page</th><th>Path</th></tr>';
+    if (!rows.length) { tbody.innerHTML = '<tr><td class="empty" colspan="5">No frames matching known component names.</td></tr>'; return; }
 
     // Group by the matched component name.
     var byComp = {}, order = [];
@@ -1005,7 +1011,7 @@
       html.push(
         '<tr class="grp sticky-grp" data-toggle="' + gid + '">' +
         '<td><span class="tw">▶</span> <b>' + esc(name) + '</b></td>' +
-        '<td><b>' + items.length + '</b></td><td></td><td></td></tr>'
+        '<td><b>' + items.length + '</b></td><td></td><td></td><td></td></tr>'
       );
       items.forEach(function (r) {
         html.push(
@@ -1015,6 +1021,7 @@
           (r.visible === false ? '<span class="hiddenmark" title="hidden">◌</span> ' : '') +
           esc(r.layerName) + '</td>' +
           '<td></td>' +
+          '<td>' + esc(r.evidence || 'file evidence') + '</td>' +
           '<td>' + esc(r.page) + '</td>' +
           '<td class="path" title="' + esc(r.path) + '">' + esc(r.path) + '</td></tr>'
         );
@@ -1138,9 +1145,10 @@
     var layers = (res.stats && res.stats.totalNodes) || 0;
     var parts = [
       'Layers <b>' + fmtNum(layers) + '</b>',
-      'Instances <b>' + fmtNum((res.instances || []).length) + '</b>',
+      'Instances <b>' + fmtNum((res.stats && res.stats.instances) || 0) + '</b>',
+      'Masters <b>' + fmtNum((res.stats && res.stats.masters) || 0) + '</b>',
       'Libraries <b>' + fmtNum(Object.keys(libNames).length) + '</b>',
-      'Detaches <b>' + fmtNum((res.detaches || []).length) + '</b>'
+      'Possible matches <b>' + fmtNum((res.detaches || []).length) + '</b>'
     ];
     if (res.aborted) parts.push('<span style="color:var(--danger)">(partial)</span>');
     el("summaryInline").innerHTML = parts.join(" · ");
