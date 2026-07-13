@@ -21,11 +21,12 @@ not proof of detachment; false positives remain possible. Never mixed into origi
 
 ## Large-file behavior
 
-The scanner never calls `findAll*`, because those APIs materialize their full result.
-It uses two cursor-based tree passes with an O(tree depth) work stack: a lightweight
-component-evidence pass, then one combined audit + possible-match pass. Result records
-cross to the UI in bounded chunks, and collapsed table/tree rows are materialized only
-when opened. Every rendered occurrence keeps its `nodeId` and remains focusable.
+The scanner uses Pixso's native type-filtered search only for `INSTANCE`, `COMPONENT`,
+and `COMPONENT_SET`, one top-level subtree at a time. This makes the evidence phase skip
+unrelated layers without materializing a file-wide FRAME result. The audit +
+possible-match pass remains a cursor-based O(tree depth) walk. Result records cross to
+the UI in bounded chunks, and collapsed table/tree rows are materialized only when
+opened. Every rendered occurrence keeps its `nodeId` and remains focusable.
 
 ## Known limits (honest)
 
