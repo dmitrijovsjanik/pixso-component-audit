@@ -329,6 +329,7 @@
 <script>
   var post = function (m) { parent.postMessage({ pluginMessage: m }, "*"); };
   var lastResult = null;
+  var pendingResult = null;
 
   // ---- window resize (drag edges/corner) ----
   // The UI can't set its own size — only the sandbox can via pixso.ui.resize.
@@ -385,6 +386,13 @@
   var sortKey = "count";   // default: most-used first
   var sortDir = -1;        // -1 desc, 1 asc
   var viewMode = "flat";   // "flat" (group by name) or "tree" (nesting)
+  var LAZY_BATCH = 200;
+  var flatLazyGroups = {};
+  var flatLazyItems = {};
+  var treeLazyNodes = {};
+  var treeLazyChildrenOf = {};
+  var treeLazyUid = 0;
+  var detachLazyGroups = {};
 
   var el = function (id) { return document.getElementById(id); };
 
@@ -431,6 +439,7 @@
     el("progWrap").style.display = on ? "block" : "none";
     applyViews(); // hides sub-tabs while scanning; restores after
     if (on) {
+      pendingResult = null;
       el("summaryInline").innerHTML = "";
       // New scan → previews from the previous file are stale.
       thumbCache = {}; thumbRequested = {};
@@ -740,12 +749,102 @@
       '<th data-col="col-page">Page' + rz + '</th></tr>';
   }
 
+  function instanceLeafHtml(r, parentId, padding, visible) {
+    return '<tr class="leaf focusable child-of-' + parentId + '" data-node-id="' + esc(r.nodeId) + '" ' +
+      'title="Click to focus on canvas" style="display:' + (visible ? '' : 'none') + '">' +
+      '<td style="padding-left:' + padding + 'px">' +
+      (r.visible ? '' : '<span class="hiddenmark" title="hidden">◌</span> ') +
+      (r.isMaster ? '<span class="chip master">master</span> ' : '') +
+      esc(r.layerName || r.componentName) + '</td>' +
+      '<td></td><td></td><td>' + esc(r.page) + '</td></tr>';
+  }
+
+  function lazyMoreHtml(kind, parentId, colspan, visible) {
+    return '<tr class="lazy-more child-of-' + parentId + '" data-lazy-kind="' + kind + '" ' +
+      'data-lazy-parent="' + parentId + '" style="display:' + (visible ? '' : 'none') + '">' +
+      '<td colspan="' + colspan + '" style="text-align:center;color:var(--muted);padding:10px">Loading more…</td></tr>';
+  }
+
+  function appendFlatBatch(parentId) {
+    var state = flatLazyItems[parentId];
+    if (!state) return;
+    var table = el("instTable");
+    var header = table.querySelector('tr[data-toggle="' + parentId + '"]');
+    if (!header) return;
+    var oldMore = table.querySelector('tr.lazy-more[data-lazy-kind="flat"][data-lazy-parent="' + parentId + '"]');
+    if (oldMore) oldMore.parentNode.removeChild(oldMore);
+    var direct = table.querySelectorAll("tr.child-of-" + parentId);
+    var anchor = direct.length ? direct[direct.length - 1] : header;
+    var end = Math.min(state.items.length, state.offset + LAZY_BATCH);
+    var open = header.classList.contains("open");
+    var html = [];
+    for (var i = state.offset; i < end; i++) {
+      html.push(instanceLeafHtml(state.items[i], parentId, state.padding, open));
+    }
+    state.offset = end;
+    if (state.offset < state.items.length) html.push(lazyMoreHtml("flat", parentId, 4, open));
+    if (html.length) anchor.insertAdjacentHTML("afterend", html.join(""));
+    observeLazySentinels();
+  }
+
+  function materializeFlatGroup(tr, id) {
+    var state = flatLazyGroups[id];
+    if (!state || state.materialized) return;
+    state.materialized = true;
+    var g = state.group;
+    if (!state.hasVariants) {
+      var onlyVariant = g.variants[g.variantOrder[0]];
+      flatLazyItems[id] = { items: onlyVariant.items, offset: 0, padding: 24 };
+      appendFlatBatch(id);
+      return;
+    }
+
+    var html = [];
+    g.variantOrder.forEach(function (vk, vi) {
+      var v = g.variants[vk];
+      var vid = id + "v" + vi;
+      flatLazyItems[vid] = { items: v.items, offset: 0, padding: 44 };
+      html.push(
+        '<tr class="var sticky-var child-of-' + id + '" data-toggle="' + vid + '" data-lazy-kind="flat-items" style="display:none">' +
+        '<td style="padding-left:24px"><span class="tw">▶</span> ' + esc(v.name) + '</td>' +
+        '<td></td><td>' + v.count + '</td><td></td></tr>'
+      );
+    });
+    if (html.length) tr.insertAdjacentHTML("afterend", html.join(""));
+  }
+
+  var lazyObserver = typeof IntersectionObserver === "function"
+    ? new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          var row = entry.target;
+          lazyObserver.unobserve(row);
+          var kind = row.getAttribute("data-lazy-kind");
+          var parentId = row.getAttribute("data-lazy-parent");
+          if (kind === "flat") appendFlatBatch(parentId);
+          else if (kind === "tree") appendTreeBatch(parentId);
+          else if (kind === "detach") appendDetachBatch(parentId);
+        });
+      }, { rootMargin: "240px" })
+    : null;
+
+  function observeLazySentinels() {
+    if (!lazyObserver) return;
+    document.querySelectorAll("tr.lazy-more").forEach(function (row) {
+      if (row.getAttribute("data-lazy-watched") === "1") return;
+      row.setAttribute("data-lazy-watched", "1");
+      lazyObserver.observe(row);
+    });
+  }
+
   function renderInstances(rows) {
     var t = el("instTable").querySelector("tbody");
     renderHead();
     if (!rows.length) { t.innerHTML = '<tr><td class="empty">No instances found.</td></tr>'; return; }
     var groups = groupInstances(rows);
     sortGroups(groups);
+    flatLazyGroups = {};
+    flatLazyItems = {};
     var html = [];
 
     groups.forEach(function (g, gi) {
@@ -767,109 +866,102 @@
       }
 
       html.push(
-        '<tr class="grp sticky-grp" data-toggle="' + gid + '">' +
+        '<tr class="grp sticky-grp" data-toggle="' + gid + '" data-lazy-kind="flat-group">' +
         '<td class="namecell"><span class="tw">▶</span>' + thumbHtml(g) + '<b>' + esc(g.name) + '</b>' + masterBadge(g) + '</td>' +
         '<td>' + sourceHtml(g) + '</td>' +
         '<td><b>' + g.count + '</b></td>' +
         '<td></td></tr>'
       );
-
-      g.variantOrder.forEach(function (vk, vi) {
-        var v = g.variants[vk];
-        var vid = gid + "v" + vi;
-        if (hasVariants) {
-          html.push(
-            '<tr class="var sticky-var child-of-' + gid + '" data-toggle="' + vid + '" style="display:none">' +
-            '<td style="padding-left:24px"><span class="tw">▶</span> ' + esc(v.name) + '</td>' +
-            '<td></td><td>' + v.count + '</td><td></td></tr>'
-          );
-        }
-        v.items.forEach(function (r) {
-          var parentClass = hasVariants ? ("child-of-" + vid) : ("child-of-" + gid);
-          html.push(
-            '<tr class="leaf focusable ' + parentClass + '" data-node-id="' + esc(r.nodeId) + '" ' +
-            'title="Click to focus on canvas" style="display:none">' +
-            '<td style="padding-left:' + (hasVariants ? 44 : 24) + 'px">' +
-            (r.visible ? "" : '<span class="hiddenmark" title="hidden">◌</span> ') +
-            (r.isMaster ? '<span class="chip master">master</span> ' : '') +
-            esc(r.path.split(" / ").slice(-1)[0] || r.componentName) + '</td>' +
-            '<td></td><td></td>' +
-            '<td>' + esc(r.page) + '</td></tr>'
-          );
-        });
-      });
+      flatLazyGroups[gid] = { group: g, hasVariants: hasVariants, materialized: false };
     });
     t.innerHTML = html.join("");
   }
 
-  // TREE VIEW: real nesting. Top-level instances are roots; children linked by
-  // parentInstanceId. Reuses the grp/child-of- expand mechanism.
+  function treeNodeHtml(r, depth, parentDomId, visible) {
+    var kids = treeLazyChildrenOf[r.nodeId] || [];
+    var hasKids = kids.length > 0;
+    var myId = "tn" + (treeLazyUid++);
+    if (hasKids) treeLazyNodes[myId] = { items: kids, offset: 0, depth: depth + 1 };
+    var pad = 8 + depth * 18;
+    var tw = hasKids
+      ? '<span class="tw">▶</span> '
+      : '<span class="tw" style="visibility:hidden">▶</span> ';
+    var cls = "leaf focusable" + (hasKids ? " grp" : "") + (parentDomId ? (" child-of-" + parentDomId) : "");
+    var toggle = hasKids ? (' data-toggle="' + myId + '" data-lazy-kind="tree-node"') : "";
+    return '<tr class="' + cls + '"' + toggle + ' data-node-id="' + esc(r.nodeId) + '" title="Click to focus on canvas"' +
+      (visible ? '' : ' style="display:none"') + '>' +
+      '<td style="padding-left:' + pad + 'px">' + tw +
+      (r.isMaster ? '<span class="chip master">master</span> ' : '') +
+      (r.visible ? '' : '<span class="hiddenmark" title="hidden">◌</span> ') +
+      '<b>' + esc(r.componentName) + '</b>' +
+      (r.variant ? ' <span class="flag" style="font-weight:400">· ' + esc(r.variant) + '</span>' : '') +
+      (hasKids ? ' <span class="flag">(' + kids.length + ')</span>' : '') + '</td>' +
+      '<td>' + sourceHtml({ origin: r.origin, library: r.libraryName }) + '</td>' +
+      '<td></td><td>' + esc(r.page) + '</td></tr>';
+  }
+
+  function appendTreeBatch(parentId) {
+    var state = treeLazyNodes[parentId];
+    if (!state) return;
+    var table = el("instTable");
+    var header = table.querySelector('tr[data-toggle="' + parentId + '"]');
+    if (!header) return;
+    var oldMore = table.querySelector('tr.lazy-more[data-lazy-kind="tree"][data-lazy-parent="' + parentId + '"]');
+    var anchor = oldMore ? oldMore.previousElementSibling : null;
+    if (oldMore) oldMore.parentNode.removeChild(oldMore);
+    if (!anchor) {
+      var direct = table.querySelectorAll("tr.child-of-" + parentId);
+      anchor = direct.length ? direct[direct.length - 1] : header;
+    }
+    var end = Math.min(state.items.length, state.offset + LAZY_BATCH);
+    var open = header.classList.contains("open");
+    var html = [];
+    for (var i = state.offset; i < end; i++) {
+      html.push(treeNodeHtml(state.items[i], state.depth, parentId, open));
+    }
+    state.offset = end;
+    if (state.offset < state.items.length) html.push(lazyMoreHtml("tree", parentId, 4, open));
+    if (html.length) anchor.insertAdjacentHTML("afterend", html.join(""));
+    observeLazySentinels();
+  }
+
+  function materializeTreeNode(tr, id) {
+    var state = treeLazyNodes[id];
+    if (!state || state.offset > 0) return;
+    appendTreeBatch(id);
+  }
+
+  // TREE VIEW: only roots are rendered initially. Direct descendants are
+  // materialized when their parent opens; every rendered row remains focusable.
   function renderTree(res) {
     renderHead();
     var t = el("instTable").querySelector("tbody");
-
-    // Build the pool honoring filters EXCEPT the nested toggle (the tree IS nesting).
     var q = searchQuery.toLowerCase();
     var pool = res.instances.filter(function (r) {
       if (!showHidden && !r.visible) return false;
       if (!libMatches(r)) return false;
-      return true; // search handled at root level below
+      return true;
     });
 
-    // Index children by parent id.
-    var childrenOf = {};
+    treeLazyChildrenOf = {};
+    treeLazyNodes = {};
+    treeLazyUid = 0;
     var byId = {};
     pool.forEach(function (r) { byId[r.nodeId] = r; });
     pool.forEach(function (r) {
       var p = r.parentInstanceId;
-      // If the parent isn't in the pool (e.g. filtered out), treat as root.
       var pkey = (p && byId[p]) ? p : "__root__";
-      (childrenOf[pkey] = childrenOf[pkey] || []).push(r);
+      (treeLazyChildrenOf[pkey] = treeLazyChildrenOf[pkey] || []).push(r);
     });
 
-    var roots = (childrenOf["__root__"] || []).slice();
-    // Search filters roots by component name (keeps their subtree).
+    var roots = (treeLazyChildrenOf["__root__"] || []).slice();
     if (q) roots = roots.filter(function (r) { return r.componentName.toLowerCase().indexOf(q) !== -1; });
     roots.sort(function (a, b) {
       var an = a.componentName.toLowerCase(), bn = b.componentName.toLowerCase();
       return an < bn ? -1 : an > bn ? 1 : 0;
     });
-
     if (!roots.length) { t.innerHTML = '<tr><td class="empty">No instances found.</td></tr>'; return; }
-
-    var html = [];
-    var uid = 0;
-    function emit(r, depth, parentDomId) {
-      var kids = childrenOf[r.nodeId] || [];
-      var hasKids = kids.length > 0;
-      var myId = "tn" + (uid++);
-      var pad = 8 + depth * 18;
-      var tw = hasKids
-        ? '<span class="tw">▶</span> '
-        : '<span class="tw" style="visibility:hidden">▶</span> ';
-      var cls = "leaf focusable" + (hasKids ? " grp" : "") + (parentDomId ? (" child-of-" + parentDomId) : "");
-      var toggle = hasKids ? (' data-toggle="' + myId + '"') : "";
-      var hidden = parentDomId ? ' style="display:none"' : "";
-      html.push(
-        '<tr class="' + cls + '"' + toggle + ' data-node-id="' + esc(r.nodeId) + '" title="Click to focus on canvas"' + hidden + '>' +
-        '<td style="padding-left:' + pad + 'px">' + tw +
-        (r.isMaster ? '<span class="chip master">master</span> ' : '') +
-        (r.visible ? "" : '<span class="hiddenmark" title="hidden">◌</span> ') +
-        '<b>' + esc(r.componentName) + '</b>' +
-        (r.variant ? ' <span class="flag" style="font-weight:400">· ' + esc(r.variant) + '</span>' : '') +
-        (hasKids ? ' <span class="flag">(' + kids.length + ')</span>' : '') + '</td>' +
-        '<td>' + sourceHtml({ origin: r.origin, library: r.libraryName }) + '</td>' +
-        '<td></td>' +
-        '<td>' + esc(r.page) + '</td></tr>'
-      );
-      kids.sort(function (a, b) {
-        var an = a.componentName.toLowerCase(), bn = b.componentName.toLowerCase();
-        return an < bn ? -1 : an > bn ? 1 : 0;
-      });
-      kids.forEach(function (k) { emit(k, depth + 1, myId); });
-    }
-    roots.forEach(function (r) { emit(r, 0, null); });
-    t.innerHTML = html.join("");
+    t.innerHTML = roots.map(function (r) { return treeNodeHtml(r, 0, null, true); }).join("");
   }
 
   // Dispatcher: choose flat vs tree.
@@ -893,6 +985,17 @@
     if (grpH > 0) root.style.setProperty("--grp-h", (Math.floor(grpH) - 1) + "px");
   }
 
+  function hideDescendants(table, parentId) {
+    table.querySelectorAll("tr.child-of-" + parentId).forEach(function (child) {
+      child.style.display = "none";
+      if (child.classList.contains("open")) child.classList.remove("open");
+      var tw = child.querySelector(".tw");
+      if (tw && child.getAttribute("data-toggle")) tw.textContent = "▶";
+      var childId = child.getAttribute("data-toggle");
+      if (childId) hideDescendants(table, childId);
+    });
+  }
+
   // Expand/collapse for grouped tree (delegated).
   function wireTree() {
     el("instTable").addEventListener("click", function (ev) {
@@ -900,29 +1003,33 @@
       if (!tr) return;
       var id = tr.getAttribute("data-toggle");
       if (!id) return;
+      var lazyKind = tr.getAttribute("data-lazy-kind");
+      if (lazyKind === "flat-group") materializeFlatGroup(tr, id);
+      else if (lazyKind === "flat-items" && flatLazyItems[id] && flatLazyItems[id].offset === 0) appendFlatBatch(id);
+      else if (lazyKind === "tree-node") materializeTreeNode(tr, id);
       var tw = tr.querySelector(".tw");
       var expanded = tr.classList.toggle("open");
       if (tw) tw.textContent = expanded ? "▼" : "▶";
       // Toggle only direct children. Collapsing also hides deeper descendants.
-      var children = el("instTable").querySelectorAll("tr.child-of-" + id);
-      children.forEach(function (c) {
-        if (expanded) {
-          c.style.display = "";
-        } else {
-          c.style.display = "none";
-          // collapse any open descendant too
-          if (c.classList.contains("open")) {
-            c.classList.remove("open");
-            var t2 = c.querySelector(".tw"); if (t2) t2.textContent = "▶";
-            var cid = c.getAttribute("data-toggle");
-            if (cid) el("instTable").querySelectorAll("tr.child-of-" + cid).forEach(function (d) { d.style.display = "none"; });
-          }
-        }
-      });
+      var table = el("instTable");
+      if (expanded) {
+        table.querySelectorAll("tr.child-of-" + id).forEach(function (c) { c.style.display = ""; });
+      } else {
+        hideDescendants(table, id);
+      }
       measureSticky(); // heights may have changed
     });
   }
   wireTree();
+  document.addEventListener("click", function (ev) {
+    var row = ev.target.closest ? ev.target.closest("tr.lazy-more") : null;
+    if (!row) return;
+    var kind = row.getAttribute("data-lazy-kind");
+    var parentId = row.getAttribute("data-lazy-parent");
+    if (kind === "flat") appendFlatBatch(parentId);
+    else if (kind === "tree") appendTreeBatch(parentId);
+    else if (kind === "detach") appendDetachBatch(parentId);
+  });
   applyViews(); // start empty: only the Audit/Merge mode buttons are visible
 
   // Filters/toggles → re-render from lastResult.
@@ -984,6 +1091,40 @@
     el("detachCount").textContent = shown === all ? (all + " layers") : (shown + " of " + all);
   }
 
+  function detachLeafHtml(r, parentId, visible) {
+    return '<tr class="leaf focusable child-of-' + parentId + '" data-node-id="' + esc(r.nodeId) + '" ' +
+      'title="Click to focus on canvas" style="display:' + (visible ? '' : 'none') + '">' +
+      '<td style="padding-left:24px">' +
+      (r.visible === false ? '<span class="hiddenmark" title="hidden">◌</span> ' : '') +
+      esc(r.layerName) + '</td><td></td>' +
+      '<td>' + esc(r.evidence || 'file evidence') + '</td>' +
+      '<td>' + esc(r.page) + '</td>' +
+      '<td class="path" title="' + esc(r.path) + '">' + esc(r.path) + '</td></tr>';
+  }
+
+  function appendDetachBatch(parentId) {
+    var state = detachLazyGroups[parentId];
+    if (!state) return;
+    var table = el("detachTable");
+    var header = table.querySelector('tr[data-toggle="' + parentId + '"]');
+    if (!header) return;
+    var oldMore = table.querySelector('tr.lazy-more[data-lazy-kind="detach"][data-lazy-parent="' + parentId + '"]');
+    var anchor = oldMore ? oldMore.previousElementSibling : null;
+    if (oldMore) oldMore.parentNode.removeChild(oldMore);
+    if (!anchor) {
+      var direct = table.querySelectorAll("tr.child-of-" + parentId);
+      anchor = direct.length ? direct[direct.length - 1] : header;
+    }
+    var end = Math.min(state.items.length, state.offset + LAZY_BATCH);
+    var open = header.classList.contains("open");
+    var html = [];
+    for (var i = state.offset; i < end; i++) html.push(detachLeafHtml(state.items[i], parentId, open));
+    state.offset = end;
+    if (state.offset < state.items.length) html.push(lazyMoreHtml("detach", parentId, 5, open));
+    if (html.length) anchor.insertAdjacentHTML("afterend", html.join(""));
+    observeLazySentinels();
+  }
+
   function renderDetach(res) {
     var rows = detachFiltered(res);
     var thead = el("detachTable").querySelector("thead");
@@ -1004,28 +1145,17 @@
       return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
     });
 
+    detachLazyGroups = {};
     var html = [];
     order.forEach(function (name, gi) {
       var items = byComp[name];
       var gid = "dg" + gi;
+      detachLazyGroups[gid] = { items: items, offset: 0 };
       html.push(
         '<tr class="grp sticky-grp" data-toggle="' + gid + '">' +
         '<td><span class="tw">▶</span> <b>' + esc(name) + '</b></td>' +
         '<td><b>' + items.length + '</b></td><td></td><td></td><td></td></tr>'
       );
-      items.forEach(function (r) {
-        html.push(
-          '<tr class="leaf focusable child-of-' + gid + '" data-node-id="' + esc(r.nodeId) + '" ' +
-          'title="Click to focus on canvas" style="display:none">' +
-          '<td style="padding-left:24px">' +
-          (r.visible === false ? '<span class="hiddenmark" title="hidden">◌</span> ' : '') +
-          esc(r.layerName) + '</td>' +
-          '<td></td>' +
-          '<td>' + esc(r.evidence || 'file evidence') + '</td>' +
-          '<td>' + esc(r.page) + '</td>' +
-          '<td class="path" title="' + esc(r.path) + '">' + esc(r.path) + '</td></tr>'
-        );
-      });
     });
     tbody.innerHTML = html.join("");
   }
@@ -1036,6 +1166,7 @@
     if (!tr) return;
     var id = tr.getAttribute("data-toggle");
     if (!id) return;
+    if (detachLazyGroups[id] && detachLazyGroups[id].offset === 0) appendDetachBatch(id);
     var tw = tr.querySelector(".tw");
     var expanded = tr.classList.toggle("open");
     if (tw) tw.textContent = expanded ? "▼" : "▶";
@@ -1540,6 +1671,22 @@
     renderMergeAll();
   })();
 
+  function acceptResult(msg) {
+    lastResult = msg;
+    hasResult = true;
+    setScanning(false);
+    el("fileName").textContent = msg.fileName || "";
+    populateLibFilter(msg);
+    summarize(msg);
+    renderList(msg);
+    updateFilterCount(msg);
+    renderDetach(msg);
+    updateDetachCount(msg);
+    var has = msg.instances.length > 0 || msg.detaches.length > 0;
+    el("csvBtn").disabled = !has;
+    el("xlsxBtn").disabled = !has;
+  }
+
   // ---- messages from sandbox ----
   window.onmessage = function (event) {
     var msg = event.data.pluginMessage;
@@ -1562,20 +1709,21 @@
     } else if (msg.type === "error") {
       setScanning(false);
       el("summaryInline").innerHTML = '<span style="color:var(--danger)">Error: ' + esc(msg.message) + '</span>';
+    } else if (msg.type === "resultStart") {
+      pendingResult = msg;
+      pendingResult.instances = [];
+      pendingResult.detaches = [];
+    } else if (msg.type === "resultChunk") {
+      if (!pendingResult || !pendingResult[msg.kind]) return;
+      for (var ci = 0; ci < msg.rows.length; ci++) pendingResult[msg.kind].push(msg.rows[ci]);
+    } else if (msg.type === "resultEnd") {
+      if (!pendingResult) return;
+      var completedResult = pendingResult;
+      pendingResult = null;
+      acceptResult(completedResult);
     } else if (msg.type === "result") {
-      lastResult = msg;
-      hasResult = true;
-      setScanning(false);
-      el("fileName").textContent = msg.fileName || "";
-      populateLibFilter(msg);
-      summarize(msg);
-      renderList(msg);
-      updateFilterCount(msg);
-      renderDetach(msg);
-      updateDetachCount(msg);
-      var has = msg.instances.length > 0 || msg.detaches.length > 0;
-      el("csvBtn").disabled = !has;
-      el("xlsxBtn").disabled = !has;
+      // Backward compatibility with older sandbox builds.
+      acceptResult(msg);
     }
   };
 </script>

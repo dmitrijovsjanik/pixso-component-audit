@@ -13,11 +13,19 @@ the year-over-year audit.
 - **Visibility** — effective (parent chain) and direct.
 - **Nesting** — is it inside another instance? inside a *library* instance? (top-level vs part-of-a-master)
 - **Slot** — heuristic flag: instance sits in a swap slot of its parent.
-- **Page / path / file** — so exports from many files merge mechanically into one table.
+- **Page / file** — so exports from many files merge mechanically into one table.
 
 Plus a separate **Possible matches** view: FRAME layers whose normalized name matches a
 component confirmed by a placed instance or local master in the current file. This is
 not proof of detachment; false positives remain possible. Never mixed into origin.
+
+## Large-file behavior
+
+The scanner never calls `findAll*`, because those APIs materialize their full result.
+It uses two cursor-based tree passes with an O(tree depth) work stack: a lightweight
+component-evidence pass, then one combined audit + possible-match pass. Result records
+cross to the UI in bounded chunks, and collapsed table/tree rows are materialized only
+when opened. Every rendered occurrence keeps its `nodeId` and remains focusable.
 
 ## Known limits (honest)
 
