@@ -10,11 +10,11 @@
  *    analysis are heuristics — kept in separate fields, never mixed into origin.
  *  - Never call importComponentByKeyAsync (crashes the sandbox).
  *  - Memory-bounded three-phase scan:
- *      Phase 1: native type-filtered evidence search, one top-level subtree at a time.
- *      Phase 2: audit instances and match frames in the same streaming walk.
+ *      Phase 1: one streaming audit + component-evidence walk.
+ *      Phase 2: match the collected FRAME references against complete evidence.
  *      Phase 3: resolve library origin once per unique master with bounded I/O.
- *    The only findAll* call is restricted to component node types and one
- *    top-level subtree at a time. FRAME matching stays on the streaming pass.
+ *    No findAll* result containing hundreds of thousands of node proxies is
+ *    materialized. Only matching FRAME paths are expanded after the walk.
  */
 
 pixso.showUI(__html__, { width: 860, height: 660 });
@@ -22,7 +22,6 @@ pixso.showUI(__html__, { width: 860, height: 660 });
 const LIB_CONCURRENCY = 8; // parallel getLibraryInfoAsync/library fallback calls
 const LIB_TIMEOUT_MS = 4000;
 const RESULT_CHUNK_SIZE = 2000;
-const EVIDENCE_TYPES = ["INSTANCE", "COMPONENT", "COMPONENT_SET"];
 
 let abort = false;
 // Guard against a second scan starting while one is already running. Two
@@ -77,26 +76,26 @@ function normalizedName(value: string): string {
   return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-// Lazy path: instead of building a string[] for every one of the ~285k nodes,
-// the walk carries an immutable linked list of ancestor names. We only
-// materialize a " / "-joined string for the ~24k nodes we actually record, by
-// walking this list backwards. depth is O(1) via a counter on the frame.
-interface PathFrame {
-  name: string;
-  parent: PathFrame | null;
-  depth: number;
-}
-
-function buildPath(frame: PathFrame | null): string {
-  if (!frame) return "";
+// FRAME candidates are held as references during the single document walk.
+// Once component evidence is complete, only actual matches pay the cost of
+// reconstructing their path and effective visibility through parent links.
+function readFrameContext(node: SceneNode): { page: string; path: string; visible: boolean } {
   const parts: string[] = [];
-  let f: PathFrame | null = frame;
-  while (f) {
-    parts.push(f.name);
-    f = f.parent;
+  let page = "";
+  let visible = node.visible !== false;
+  let parent: BaseNode | null = node.parent;
+  while (parent) {
+    if (parent.type === "PAGE") {
+      page = parent.name;
+      break;
+    }
+    if (parent.type === "DOCUMENT") break;
+    if ((parent as any).visible === false) visible = false;
+    if (typeof parent.name === "string") parts.push(parent.name);
+    parent = parent.parent;
   }
   parts.reverse();
-  return parts.join(" / ");
+  return { page, path: parts.join(" / "), visible };
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
@@ -236,134 +235,12 @@ interface ShallowCursor {
 }
 
 interface AuditCursor extends ShallowCursor {
-  pathFrame: PathFrame | null;
+  depth: number;
   parentVisible: boolean;
   ancInst: boolean;
   ancLibInst: boolean;
   libAncestor: InstanceRecord | null;
   parentInstId: string | null;
-}
-
-// We need complete component evidence before matching frames because a matching
-// frame may appear earlier than the instance/master that proves its name.
-// Pixso's native type filter skips unrelated layers. We invoke it separately on
-// each top-level subtree so the API never materializes one file-wide result.
-// A cursor fallback preserves correctness if a node does not expose the API.
-async function collectComponentEvidence(
-  pages: PageNode[],
-  identityCache: Map<string, ComponentIdentity>
-): Promise<{ evidence: ComponentEvidenceMap; scanned: number; strategy: string }> {
-  const evidence: ComponentEvidenceMap = new Map();
-  let scanned = 0;
-  let lastYieldAt = Date.now();
-  let nativeSubtrees = 0;
-  let fallbackSubtrees = 0;
-  let fallbackNodesTraversed = 0;
-
-  const inspect = (node: SceneNode): void => {
-    scanned++;
-    if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
-      addComponentEvidence(evidence, node.name, "localMaster");
-    } else if (node.type === "INSTANCE") {
-      let master: ComponentNode | null = null;
-      try {
-        master = (node as InstanceNode).mainComponent;
-      } catch (e) {
-        master = null;
-      }
-      const identity = resolveComponentIdentityCached(master, node.name, identityCache);
-      if (identity.componentName) {
-        addComponentEvidence(evidence, identity.componentName, "fileInstance");
-      }
-    }
-  };
-
-  const reportAndYield = async (): Promise<void> => {
-    progress("Phase 1/3 · indexing component names", scanned, 0, "", [
-      { key: "nodes", label: "Relevant nodes", value: scanned },
-      { key: "components", label: "Component names", value: evidence.size },
-    ]);
-    await yieldToUI();
-    lastYieldAt = Date.now();
-  };
-
-  const inspectFallbackSubtree = async (root: SceneNode): Promise<void> => {
-    const cursors: ShallowCursor[] = [{ children: [root], index: 0 }];
-    while (cursors.length > 0) {
-      if (abort) break;
-      const cursor = cursors[cursors.length - 1];
-      if (cursor.index >= cursor.children.length) {
-        cursors.pop();
-        continue;
-      }
-      const node = cursor.children[cursor.index++];
-      fallbackNodesTraversed++;
-      if (EVIDENCE_TYPES.indexOf(node.type) >= 0) inspect(node);
-      const children = "children" in node ? kidsOf(node) : [];
-      if (children.length) cursors.push({ children, index: 0 });
-      if (fallbackNodesTraversed % 1024 === 0 && Date.now() - lastYieldAt >= 40) {
-        await reportAndYield();
-      }
-    }
-  };
-
-  for (const page of pages) {
-    if (abort) break;
-    const roots = kidsOf(page);
-    for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
-      if (abort) break;
-      const root = roots[rootIndex];
-      progress(
-        "Phase 1/3 · indexing component names",
-        scanned,
-        0,
-        `Searching ${page.name} · ${rootIndex + 1}/${roots.length}`,
-        [
-          { key: "nodes", label: "Relevant nodes", value: scanned },
-          { key: "components", label: "Component names", value: evidence.size },
-        ]
-      );
-
-      const findByType = (root as any).findAllWithCriteria;
-      if (EVIDENCE_TYPES.indexOf(root.type) >= 0) inspect(root);
-      if (typeof findByType === "function") {
-        let matches: SceneNode[] | null = null;
-        try {
-          const raw = findByType.call(root, { types: EVIDENCE_TYPES });
-          matches = raw && typeof raw.then === "function" ? await raw : raw;
-        } catch (e) {
-          // Fall through to the streaming subtree walk.
-        }
-        if (matches && typeof matches.length === "number") {
-          nativeSubtrees++;
-          for (let i = 0; i < matches.length; i++) {
-            if (abort) break;
-            inspect(matches[i]);
-            if (scanned % 1024 === 0 && Date.now() - lastYieldAt >= 40) {
-              await reportAndYield();
-            }
-          }
-          continue;
-        }
-      }
-      fallbackSubtrees++;
-      // Root was already inspected above; scan only its descendants here.
-      const children = kidsOf(root);
-      for (let i = 0; i < children.length; i++) {
-        await inspectFallbackSubtree(children[i]);
-        if (abort) break;
-      }
-    }
-  }
-
-  progress("Phase 1/3 · indexing component names", scanned, 0, "", [
-    { key: "nodes", label: "Relevant nodes", value: scanned },
-    { key: "components", label: "Component names", value: evidence.size },
-  ]);
-  const strategy = fallbackSubtrees
-    ? `native-subtrees:${nativeSubtrees};fallback-subtrees:${fallbackSubtrees}`
-    : `native-subtrees:${nativeSubtrees}`;
-  return { evidence, scanned, strategy };
 }
 
 function isInSwapSlot(node: SceneNode): boolean {
@@ -564,23 +441,18 @@ async function runScan() {
   }
   const currentFileKey = (pixso as any).fileKey || null;
   const identityCache = new Map<string, ComponentIdentity>();
+  const componentEvidence: ComponentEvidenceMap = new Map();
+  // One master can back hundreds of thousands of instances. Its evidence name
+  // only needs normalizing once; master-less instances still use their own name.
+  const evidenceMasterIds = new Set<string>();
 
-  // ===== PHASE 1: collect complete component evidence =====
-  // This pass intentionally stores no node records or paths. It lets phase 2
-  // match frames exactly even when the proving instance/master appears later
-  // in traversal order.
-  const tEvidence = Date.now();
-  progress("Phase 1/3 · indexing component names", 0, 0, "Starting…");
-  const evidenceResult = await collectComponentEvidence(pages as PageNode[], identityCache);
-  const componentEvidence = evidenceResult.evidence;
-  timings.phase1_evidence = Date.now() - tEvidence;
-
-  // ===== PHASE 2: audit + possible matches in one streaming walk =====
+  // ===== PHASE 1: audit + component evidence in one streaming walk =====
   // Cursor frames are O(tree depth). We never create a pending work item for
   // every sibling, which is important for very wide million-layer documents.
-  progress("Phase 2/3 · scanning layers", 0, 0, "Starting…");
+  progress("Phase 1/3 · scanning layers", 0, 0, "Starting…");
   const instances: InstanceRecord[] = [];
   const detaches: DetachRecord[] = [];
+  const frameCandidates: FrameNode[] = [];
   // Unique masters to resolve in phase 3: masterId -> { master, records[] }
   const uniqueMasters = new Map<string, { master: ComponentNode; remote: boolean; records: InstanceRecord[] }>();
   const localMasterSamples = new Map<string, ComponentNode>();
@@ -591,6 +463,7 @@ async function runScan() {
   const tAudit = Date.now();
   let processed = 0;
   let checkedFrames = 0;
+  let evidenceNodesScanned = 0;
   let lastYieldAt = Date.now();
 
   for (const page of pages) {
@@ -598,7 +471,7 @@ async function runScan() {
     const cursors: AuditCursor[] = [{
       children: kidsOf(page),
       index: 0,
-      pathFrame: null,
+      depth: 0,
       parentVisible: true,
       ancInst: false,
       ancLibInst: false,
@@ -615,33 +488,22 @@ async function runScan() {
       }
 
       const node = cursor.children[cursor.index++];
-      const { pathFrame, parentVisible, ancInst, ancLibInst, libAncestor, parentInstId } = cursor;
+      const { depth, parentVisible, ancInst, ancLibInst, libAncestor, parentInstId } = cursor;
+      const nodeType = node.type;
       processed++;
 
       // Effective visibility without walking up the tree: a node is visible iff
       // every ancestor is visible AND it is itself visible. We already know the
       // parent chain's visibility from the stack.
-      const selfVisible =
-        "visible" in node ? (node as SceneNode).visible : true;
+      const selfVisible = node.visible !== false;
       const effectivelyVisible = parentVisible && selfVisible;
 
-      if (node.type === "FRAME") {
+      if (nodeType === "FRAME") {
         checkedFrames++;
-        const match = componentEvidence.get(normalizedName(node.name));
-        if (match) {
-          const evidence = match.fileInstance && match.localMaster
-            ? "file instance + local master"
-            : match.fileInstance ? "file instance" : "local master";
-          detaches.push({
-            layerName: node.name,
-            matchedComponentName: match.displayName,
-            page: page.name,
-            path: buildPath(pathFrame),
-            nodeId: node.id,
-            visible: effectivelyVisible,
-            evidence,
-          });
-        }
+        frameCandidates.push(node as FrameNode);
+      } else if (nodeType === "COMPONENT" || nodeType === "COMPONENT_SET") {
+        evidenceNodesScanned++;
+        addComponentEvidence(componentEvidence, node.name, "localMaster");
       }
 
       let childAncInst = ancInst;
@@ -649,40 +511,47 @@ async function runScan() {
       let childLibAncestor = libAncestor;
       let childParentInstId = parentInstId;
 
-      if (node.type === "INSTANCE") {
+      if (nodeType === "INSTANCE") {
         const inst = node as InstanceNode;
+        const instId = inst.id;
+        const instName = inst.name;
         let master: ComponentNode | null = null;
         try {
           master = inst.mainComponent;
         } catch (e) {
           master = null;
         }
-        const id = resolveComponentIdentityCached(master, inst.name, identityCache);
+        const id = resolveComponentIdentityCached(master, instName, identityCache);
+        evidenceNodesScanned++;
+        if (!master || !evidenceMasterIds.has(master.id)) {
+          addComponentEvidence(componentEvidence, id.componentName, "fileInstance");
+          if (master) evidenceMasterIds.add(master.id);
+        }
 
         const rec: InstanceRecord = {
           componentName: id.componentName,
           componentKey: id.componentKey,
           variant: id.variant,
           masterKey: id.masterKey,
-          origin: master ? "local" : "unknown", // provisional; phase 2 upgrades to "library"
+          origin: master ? "local" : "unknown", // provisional; phase 3 upgrades to "library"
           libraryName: null,
           libraryKey: null,
           visible: effectivelyVisible,
-          directlyVisible: inst.visible,
+          directlyVisible: selfVisible,
           page: page.name,
-          layerName: inst.name,
-          depth: pathFrame ? pathFrame.depth : 0,
+          layerName: instName,
+          depth,
           nestedInsideInstance: ancInst,
           nestedInsideLibraryInstance: ancLibInst,
           inheritedFromParent: false,
           inSlot: isInSwapSlot(inst),
           isMaster: false,
           parentInstanceId: parentInstId,
-          nodeId: inst.id,
+          nodeId: instId,
         };
         instances.push(rec);
         // Descendants of this instance point to it as their parent.
-        childParentInstId = inst.id;
+        childParentInstId = instId;
 
         // Queue master for phase-3 resolution (only if it looks remote).
         if (master && id.remote) {
@@ -702,23 +571,27 @@ async function runScan() {
         }
 
         // Any instance nested inside a library component is a fallback candidate:
-        // if its own master fails to resolve in phase 2, it inherits the ancestor.
-        if (libAncestor) nestedToInherit.push({ rec, ancestor: libAncestor });
+        // if its own master fails to resolve in phase 3, it inherits the ancestor.
+        if (libAncestor && (!master || id.remote)) {
+          nestedToInherit.push({ rec, ancestor: libAncestor });
+        }
 
         childAncInst = true;
         if (master && id.remote) childAncLibInst = true;
       } else if (
-        node.type === "COMPONENT_SET" ||
-        (node.type === "COMPONENT" && (!node.parent || node.parent.type !== "COMPONENT_SET"))
+        nodeType === "COMPONENT_SET" ||
+        (nodeType === "COMPONENT" && (!node.parent || node.parent.type !== "COMPONENT_SET"))
       ) {
         // A component MASTER defined in this file (not an instance). For a
         // COMPONENT_SET we record the set once; variants (COMPONENT children of
         // a set) are skipped so we don't double-count. This is a real audit fact:
         // the file defines/uses this component even without a placed instance.
         const master = node as ComponentNode;
+        const masterId = master.id;
+        const masterName = master.name;
         const isRemote = (master as any).remote === true;
         const rec: InstanceRecord = {
-          componentName: master.name,
+          componentName: masterName,
           componentKey: master.key || null,
           variant: null,
           masterKey: master.key || null,
@@ -726,23 +599,23 @@ async function runScan() {
           libraryName: null,
           libraryKey: null,
           visible: effectivelyVisible,
-          directlyVisible: master.visible,
+          directlyVisible: selfVisible,
           page: page.name,
-          layerName: master.name,
-          depth: pathFrame ? pathFrame.depth : 0,
+          layerName: masterName,
+          depth,
           nestedInsideInstance: ancInst,
           nestedInsideLibraryInstance: ancLibInst,
           inheritedFromParent: false,
           inSlot: false,
           isMaster: true,
           parentInstanceId: parentInstId,
-          nodeId: master.id,
+          nodeId: masterId,
         };
         instances.push(rec);
 
         // A remote master (e.g. a library file opened directly) → resolve library.
         if (isRemote) {
-          const key = master.id;
+          const key = masterId;
           let bucket = uniqueMasters.get(key);
           if (!bucket) { bucket = { master, remote: true, records: [] }; uniqueMasters.set(key, bucket); }
           bucket.records.push(rec);
@@ -751,15 +624,10 @@ async function runScan() {
 
       const children = "children" in node ? kidsOf(node) : [];
       if (children.length) {
-        const childFrame: PathFrame = {
-          name: node.name,
-          parent: pathFrame,
-          depth: (pathFrame ? pathFrame.depth : 0) + 1,
-        };
         cursors.push({
           children,
           index: 0,
-          pathFrame: childFrame,
+          depth: depth + 1,
           parentVisible: effectivelyVisible,
           ancInst: childAncInst,
           ancLibInst: childAncLibInst,
@@ -769,10 +637,10 @@ async function runScan() {
       }
 
       if (processed % 1024 === 0 && Date.now() - lastYieldAt >= 40) {
-        progress("Phase 2/3 · scanning layers", processed, 0, "", [
+        progress("Phase 1/3 · scanning layers", processed, 0, "", [
           { key: "layers", label: "Layers", value: processed },
           { key: "instances", label: "Instances", value: instances.length },
-          { key: "detaches", label: "Possible matches", value: detaches.length },
+          { key: "frames", label: "Frames checked", value: checkedFrames },
         ]);
         await yieldToUI();
         lastYieldAt = Date.now();
@@ -780,12 +648,54 @@ async function runScan() {
     }
   }
   const totalNodes = processed;
-  timings.phase2_audit = Date.now() - tAudit;
-  progress("Phase 2/3 · scanning layers", processed, 0, "", [
+  timings.phase1_scan = Date.now() - tAudit;
+  progress("Phase 1/3 · scanning layers", processed, 0, "", [
     { key: "layers", label: "Layers", value: processed },
     { key: "instances", label: "Instances", value: instances.length },
+    { key: "frames", label: "Frames checked", value: checkedFrames },
+  ]);
+
+  // ===== PHASE 2: apply complete evidence to collected FRAME references =====
+  // This replaces the old second full-file pass. Only the actual matches walk
+  // their parent chain to reconstruct path and effective visibility.
+  const tDetachMatching = Date.now();
+  lastYieldAt = Date.now();
+  for (let i = 0; i < frameCandidates.length; i++) {
+    if (abort) break;
+    const node = frameCandidates[i];
+    const match = componentEvidence.get(normalizedName(node.name));
+    if (match) {
+      const context = readFrameContext(node);
+      const evidence = match.fileInstance && match.localMaster
+        ? "file instance + local master"
+        : match.fileInstance ? "file instance" : "local master";
+      detaches.push({
+        layerName: node.name,
+        matchedComponentName: match.displayName,
+        page: context.page,
+        path: context.path,
+        nodeId: node.id,
+        visible: context.visible,
+        evidence,
+      });
+    }
+    if ((i + 1) % 2048 === 0 && Date.now() - lastYieldAt >= 40) {
+      progress("Phase 2/3 · matching frames", i + 1, frameCandidates.length, "", [
+        { key: "frames", label: "Frames checked", value: i + 1 },
+        { key: "detaches", label: "Possible matches", value: detaches.length },
+      ]);
+      await yieldToUI();
+      lastYieldAt = Date.now();
+    }
+  }
+  progress("Phase 2/3 · matching frames", frameCandidates.length, frameCandidates.length, "", [
+    { key: "frames", label: "Frames checked", value: frameCandidates.length },
     { key: "detaches", label: "Possible matches", value: detaches.length },
   ]);
+  frameCandidates.length = 0;
+  componentEvidence.clear();
+  evidenceMasterIds.clear();
+  timings.phase2_detach_matching = Date.now() - tDetachMatching;
 
   // ===== PHASE 3: resolve libraries for UNIQUE masters, in parallel =====
   // Diagnostics: capture raw API responses for a sample of masters so we can
@@ -793,9 +703,6 @@ async function runScan() {
   // status) instead of guessing. Kept small so it copies cleanly.
   const diag: any = { sampleRemote: [], sampleLocal: [], resolved: 0, unresolved: 0, resolvedNames: {}, libraryMap: null };
   const tLibraries = Date.now();
-
-  // Evidence has already been applied to every frame in phase 2.
-  componentEvidence.clear();
 
   const masterBuckets = Array.from(uniqueMasters.values());
   const uniqueLibraryMastersCount = masterBuckets.length;
@@ -953,7 +860,7 @@ async function runScan() {
   pixso.ui.postMessage({
     type: "resultStart",
     fileName,
-    buildId: "BUILD-streaming-audit-v9",
+    buildId: "BUILD-streaming-audit-v10",
     aborted: abort,
     stats: {
       totalNodes,
@@ -961,8 +868,8 @@ async function runScan() {
       masters: masterCount,
       records: instanceRecordCount,
       possibleMatches: detachCount,
-      evidenceNodesScanned: evidenceResult.scanned,
-      evidenceStrategy: evidenceResult.strategy,
+      evidenceNodesScanned,
+      evidenceStrategy: "single-streaming-pass",
       framesChecked: checkedFrames,
       uniqueLibraryMasters: uniqueLibraryMastersCount,
       timings,

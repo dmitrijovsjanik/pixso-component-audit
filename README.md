@@ -21,12 +21,13 @@ not proof of detachment; false positives remain possible. Never mixed into origi
 
 ## Large-file behavior
 
-The scanner uses Pixso's native type-filtered search only for `INSTANCE`, `COMPONENT`,
-and `COMPONENT_SET`, one top-level subtree at a time. This makes the evidence phase skip
-unrelated layers without materializing a file-wide FRAME result. The audit +
-possible-match pass remains a cursor-based O(tree depth) walk. Result records cross to
-the UI in bounded chunks, and collapsed table/tree rows are materialized only when
-opened. Every rendered occurrence keeps its `nodeId` and remains focusable.
+The scanner performs one cursor-based O(tree depth) document walk. During that walk it
+collects the audit, component-name evidence, and lightweight FRAME references. Once the
+evidence is complete, it expands paths only for actual possible matches. This avoids a
+second million-layer pass and avoids materializing a file-wide native search result.
+Result records cross to the UI in bounded chunks, and collapsed table/tree rows are
+materialized only when opened. Every rendered occurrence keeps its `nodeId` and remains
+focusable.
 
 ## Known limits (honest)
 
